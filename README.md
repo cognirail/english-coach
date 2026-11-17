@@ -1,8 +1,8 @@
 # english-coach
 
-A Claude Code plugin for non-native English writers: every English prompt you send gets a corrected version (handed to Claude as a side note, shown to you), and a full feedback record you can review later in a local HTML page. Feedback is written in Chinese.
+A Claude Code plugin for non-native English writers: every English prompt you send gets a corrected version (handed to Claude as a side note, shown to you), and a full feedback record you can browse in a local dashboard (streak heatmap, accuracy trend, settings). Feedback is written in Chinese.
 
-给中文母语开发者的 Claude Code 插件：你用英文写的每条 prompt，都会得到一个修正版（作为旁注给 Claude，同时显示给你），完整纠错记录随时可在本地 HTML 页里回看。
+给中文母语开发者的 Claude Code 插件：你用英文写的每条 prompt，都会得到一个修正版（作为旁注给 Claude，同时显示给你），完整纠错记录、打卡网格、准确率和设置都在本地看板里。
 
 > **隐私**：每条英文 prompt 会发给你配置的模型 API（默认 Anthropic）。记录只存在本机 `~/.english-coach/`，目录权限 700。
 
@@ -17,11 +17,19 @@ A Claude Code plugin for non-native English writers: every English prompt you se
   → 脱离：完整反馈（原文中译 · 纠错列表 · 修正版 · 修正版中译）追加到 ~/.english-coach/records/<日期>.jsonl
 ```
 
-`/english-coach:review` 把全部记录生成一个自包含的 HTML 并在浏览器打开，可按原文 / 纠错搜索。
+`/english-coach:dashboard` 在浏览器打开本地看板（只监听 127.0.0.1，30 分钟无访问自动退出），三页：
+
+| 页面 | 内容                                                                                                       |
+| ---- | ---------------------------------------------------------------------------------------------------------- |
+| 概览 | 总记录 · 连续打卡 · 每百词错误 · 本周对比；过去一年的打卡网格，可切换「练习量 / 准确率」，点格子看当天记录 |
+| 记录 | 按天分组的全部纠错，可按日期筛选、按原文 / 纠错搜索                                                        |
+| 设置 | 临时开关 · 后台进程状态与重启 · key 来源 · 连通测试 · 模型通道配置（保存即重启后台进程）                   |
+
+准确率口径：每百个英文词的纠错数，越低越好；只算拿到完整反馈的记录。
 
 ## 要求
 
-- macOS（key 从 Keychain 读，页面用 `open` 打开）
+- macOS（key 从 Keychain 读，看板用 `open` 打开）
 - Node.js ≥ 24（直接运行 TypeScript，无需安装依赖）
 - 一个模型 API key（见下）
 
@@ -56,7 +64,7 @@ security add-generic-password -s english-coach -a anthropic -w
 
 key 存 `security add-generic-password -s english-coach -a openai -w`，或设 `OPENAI_API_KEY`。接 OpenRouter、自建网关等兼容端点时再加 `"baseUrl": "https://<host>/v1"`。
 
-全部字段：
+也可以在看板「设置」页改，保存时校验并重启后台进程。设置页不接收也不显示 key。全部字段：
 
 | 字段              | 默认                                                      | 说明                        |
 | ----------------- | --------------------------------------------------------- | --------------------------- |
@@ -67,14 +75,14 @@ key 存 `security add-generic-password -s english-coach -a openai -w`，或设 `
 | `keychainAccount` | 同 `provider`                                             | Keychain 条目的 account     |
 | `envKey`          | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`                    | Keychain 没有时读的环境变量 |
 
-改完配置后重启 daemon：`pkill -f english-coach/daemon/daemon.ts`，下一条消息会自动拉起新的。
+手改配置文件后在设置页点「重启」，或 `pkill -f english-coach/daemon/daemon.ts`，下一条消息会自动拉起新的。
 
 ## 开关
 
-| 方式        | 命令                                                               | 生效       |
-| ----------- | ------------------------------------------------------------------ | ---------- |
-| 临时关 / 开 | `touch ~/.english-coach/disabled` / `rm ~/.english-coach/disabled` | 下一条消息 |
-| 停用插件    | `claude plugin disable english-coach@english-coach`                | 新会话     |
+| 方式        | 命令                                                    | 生效       |
+| ----------- | ------------------------------------------------------- | ---------- |
+| 临时关 / 开 | 设置页按钮，或 `touch` / `rm ~/.english-coach/disabled` | 下一条消息 |
+| 停用插件    | `claude plugin disable english-coach@english-coach`     | 新会话     |
 
 ## 失效行为
 
@@ -88,9 +96,9 @@ key 存 `security add-generic-password -s english-coach -a openai -w`，或设 `
 ~/.english-coach/
 ├── config.json             # 可选
 ├── records/<日期>.jsonl    # 每条一行，只追加
-├── review.html             # /english-coach:review 生成
 ├── daemon.sock             # 唯一事实：谁在这个路径上应答谁就是 daemon
-└── logs/daemon.log
+├── ui.json                 # 看板地址与访问 token（600），看板退出即失效
+└── logs/{daemon,ui}.log
 ```
 
 记录格式见 `daemon/daemon.ts` 的 `CoachRecord`。
@@ -100,6 +108,7 @@ key 存 `security add-generic-password -s english-coach -a openai -w`，或设 `
 ```bash
 pnpm install
 pnpm test && pnpm lint && pnpm typecheck
+ENGLISH_COACH_HOME=/tmp/ec node ui/server.ts   # 用临时数据目录起看板，不碰真实记录
 claude --plugin-dir .        # 不安装，直接加载本地插件
 ```
 

@@ -9,7 +9,7 @@
 # 退出码   永远 0：本 hook 只加旁注，从不拦 prompt。
 # =============================================================================
 set -u
-DATA="${HOME}/.english-coach"
+DATA="${ENGLISH_COACH_HOME:-${HOME}/.english-coach}" # 与 daemon 的 DATA_DIR 同一规则
 SOCK="${DATA}/daemon.sock"
 PKG="$(cd "$(dirname "$0")/.." && pwd -P)"
 [[ -e "${DATA}/disabled" ]] && exit 0 # 开关：touch 即关，rm 即开，不用重开会话

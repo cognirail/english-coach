@@ -27,9 +27,12 @@ import nodePath from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-export const DATA_DIR = nodePath.join(nodeOs.homedir(), '.english-coach');
+// ENGLISH_COACH_HOME 覆盖数据目录：e2e 用临时目录跑，不污染真实记录
+export const DATA_DIR =
+  process.env.ENGLISH_COACH_HOME ?? nodePath.join(nodeOs.homedir(), '.english-coach');
 export const SOCKET_PATH = nodePath.join(DATA_DIR, 'daemon.sock');
-const CONFIG_PATH = nodePath.join(DATA_DIR, 'config.json');
+export const CONFIG_PATH = nodePath.join(DATA_DIR, 'config.json');
+export const DISABLED_PATH = nodePath.join(DATA_DIR, 'disabled');
 const SHORT_TIMEOUT_MS = 7000; // hook 侧 curl -m 9、Claude 侧 timeout 10：留出两层余量
 const FULL_TIMEOUT_MS = 30_000;
 const HEARTBEAT_MS = 240_000; // 实测空闲 300s 连接仍在，取 4 分钟
@@ -41,7 +44,7 @@ const HAN_CHARS_PER_WORD = 2; // 现代汉语平均词长约 1.5–2 字（北�
 // 英文词 = 不挨数字的字母串：hex id / 带数字的 token（0123abcd…）不算词，否则一串 id 能顶几十个词
 const WORD_RE = /(?<![A-Za-z0-9])[A-Za-z][A-Za-z']*(?![A-Za-z0-9])/g;
 
-const SHORT_SYSTEM = [
+export const SHORT_SYSTEM = [
   'You are an English editor for a Chinese software engineer who is writing to an AI coding assistant.',
   'Rewrite the message: fix grammar and word choice, remove redundancy.',
   'Keep every piece of information, the sentence order, and all code identifiers, paths, and quoted text exactly as written.',
@@ -82,6 +85,11 @@ function isCorrection(c: unknown): boolean {
   }
   const { from, to, why } = c as Record<string, unknown>;
   return typeof from === 'string' && typeof to === 'string' && typeof why === 'string';
+}
+
+/** 英文词数（规则见 WORD_RE）；统计页按它算每百词错误数。 */
+export function countEnglishWords(text: string): number {
+  return text.match(WORD_RE)?.length ?? 0;
 }
 
 /** 解析完整反馈；模型偶尔包代码围栏，剥掉再解析，字段不全返回 null。 */
@@ -148,7 +156,7 @@ export function getSkipReason(prompt: string): string | null {
   // 2026-10-19 误触发：URL 的 host / 路径段被数成词，两条 GitHub 链接就凑够 14 个词
   const prose = text.replaceAll(/\S+/g, (token) => (token.indexOf('://', 1) > 0 ? ' ' : token));
   const hanWords = (prose.match(/\p{Script=Han}/gu)?.length ?? 0) / HAN_CHARS_PER_WORD;
-  const words = prose.match(WORD_RE)?.length ?? 0;
+  const words = countEnglishWords(prose);
   if (hanWords > 0 && hanWords / (hanWords + words) > CJK_RATIO_SKIP) {
     return 'chinese';
   }
@@ -197,17 +205,22 @@ export function resolveConfig(raw: Partial<Config>): Config {
   if (model === '') {
     throw new Error('provider=openai 时必须在 config.json 里写 model');
   }
+  const baseUrl = trimTrailingSlash(raw.baseUrl ?? d.baseUrl);
+  // 传输只实现了 https；http 端点写进来会让 daemon 起不来
+  if (!URL.canParse(baseUrl) || new URL(baseUrl).protocol !== 'https:') {
+    throw new Error(`config.baseUrl 必须是 https:// 开头的合法地址，拿到 ${baseUrl}`);
+  }
   return {
     provider,
     model,
-    baseUrl: trimTrailingSlash(raw.baseUrl ?? d.baseUrl),
+    baseUrl,
     keychainService: raw.keychainService ?? 'english-coach',
     keychainAccount: raw.keychainAccount ?? provider,
     envKey: raw.envKey ?? d.envKey,
   };
 }
 
-async function loadConfig(): Promise<Config> {
+export async function loadConfig(): Promise<Config> {
   let raw: Partial<Config> = {};
   try {
     raw = JSON.parse(await readFile(CONFIG_PATH, 'utf8')) as Partial<Config>;
@@ -280,31 +293,38 @@ export function parseResponse(config: Config, text: string): string {
 }
 
 const execFileAsync = promisify(execFile);
-const keyCache: { value: string | null } = { value: null };
 
-/** 先 Keychain 后环境变量。Keychain 里没有这一项时 security 退出码 44，按「没配」处理继续找环境变量。 */
-async function apiKey(config: Config): Promise<string> {
-  if (keyCache.value !== null) {
-    return keyCache.value;
-  }
-  let key: string;
+/** 读 Keychain 条目；没有这一项时 security 退出码 44，超时（钥匙串被锁时会弹窗等人）也按「没配」返回空串。 */
+async function readKeychain(config: Config): Promise<string> {
   try {
     const { stdout } = await execFileAsync(
       '/usr/bin/security',
       ['find-generic-password', '-s', config.keychainService, '-a', config.keychainAccount, '-w'],
-      { timeout: 2000 }, // 钥匙串被锁时会弹窗等人；超时按「没配」处理，避免卡住整条请求
+      { timeout: 2000 },
     );
-    key = stdout.trim();
+    return stdout.trim();
   } catch {
-    key = '';
+    return '';
   }
+}
+
+/** key 从哪找到的；只给设置页显示来源，不返回 key 本身。 */
+export async function keySource(config: Config): Promise<'keychain' | 'env' | null> {
+  if ((await readKeychain(config)) !== '') {
+    return 'keychain';
+  }
+  return (process.env[config.envKey]?.trim() ?? '') === '' ? null : 'env';
+}
+
+/** 先 Keychain 后环境变量。 */
+async function apiKey(config: Config): Promise<string> {
+  let key = await readKeychain(config);
   key ||= process.env[config.envKey]?.trim() ?? '';
   if (key === '') {
     throw new Error(
       `没找到 key：Keychain ${config.keychainService}/${config.keychainAccount} 与环境变量 ${config.envKey} 都为空`,
     );
   }
-  keyCache.value = key;
   return key;
 }
 
@@ -313,8 +333,10 @@ const WARM_SOCKETS = 2;
 const agent = new https.Agent({ keepAlive: true, maxSockets: WARM_SOCKETS });
 
 export function createComplete(config: Config): Complete {
+  // key 缓存跟着这一份配置走：换配置就换实例，不会把旧 provider 的 key 发给新端点
+  let cachedKey: string | null = null;
   return async (system, user, maxTokens, signal) => {
-    const key = await apiKey(config);
+    const key = (cachedKey ??= await apiKey(config));
     const { url, headers, body } = buildRequest(config, key, system, user, maxTokens);
     const res = await new Promise<{ status: number; text: string }>((resolve, reject) => {
       const req = https.request(
@@ -344,7 +366,7 @@ export function createComplete(config: Config): Complete {
       req.end(body);
     });
     if (res.status === 401) {
-      keyCache.value = null;
+      cachedKey = null;
     } // key 换了：下次重读 Keychain
     if (res.status !== 200) {
       // 只带状态码，不带正文和错误码：兼容端点可能在任一字段里回显 key
@@ -513,13 +535,19 @@ export function createServer(options: ServerOptions): http.Server {
           hookEventName: 'UserPromptSubmit',
           additionalContext: `english-coach（英文纠错插件，用户已知）：下面是用户这条英文原文的修正版，只用它来理解意图；修正版与原文冲突时以原文为准。不要在回复里评论、复述或致谢这段修正，用户在别处看反馈。\n\n${corrected}`,
         },
-        systemMessage: `english-coach 修正版：\n${corrected}\n完整反馈：/english-coach:review`,
+        systemMessage: `english-coach 修正版：\n${corrected}\n完整反馈：/english-coach:dashboard`,
       });
       // 脱离响应：完整反馈落当天 JSONL，失败也写一条让人看见
-      void recordFullFeedback(options, at, prompt, corrected);
+      const pending = recordFullFeedback(options, at, prompt, corrected);
+      PENDING.add(pending);
+      void pending.finally(() => PENDING.delete(pending));
     })();
   });
 }
+
+/** 脱离响应后还在跑的完整反馈；SIGTERM 时等它们写完再退，设置页保存重启不丢记录。 */
+const PENDING = new Set<Promise<void>>();
+const DRAIN_MS = 20_000; // 完整反馈单次请求上限之上留余量
 
 /** 本机 socket 上的 daemon 是否在应答 /health。 */
 function isAlive(): Promise<boolean> {
@@ -633,7 +661,11 @@ async function serve(): Promise<void> {
   }, 5000);
   ownershipTimer.unref();
   const stop = (): void => {
-    server.close(() => process.exit(0));
+    server.close();
+    void Promise.race([
+      Promise.allSettled(PENDING),
+      new Promise((r) => setTimeout(r, DRAIN_MS).unref()),
+    ]).then(() => process.exit(0));
   };
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);

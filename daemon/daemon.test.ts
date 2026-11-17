@@ -163,7 +163,7 @@ void test('/review 成功：additionalContext 给 Claude、systemMessage 给人�
     );
     assert.match(
       out.systemMessage,
-      /^english-coach 修正版：\nI suddenly have an idea\.\n完整反馈：\/english-coach:review$/,
+      /^english-coach 修正版：\nI suddenly have an idea\.\n完整反馈：\/english-coach:dashboard$/,
     );
     const [rec] = await waitForRecords(dataDirectory);
     assert.ok(rec !== undefined);

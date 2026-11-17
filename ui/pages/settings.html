@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>english-coach 设置</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/settings.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>状态</h1>
+      <section class="card section">
+        <div class="status-grid">
+          <span class="muted">纠错</span>
+          <div class="row">
+            <span id="enabled"></span>
+            <button id="toggle-enabled"></button>
+          </div>
+          <span class="muted">后台进程</span>
+          <div class="row">
+            <span id="daemon"></span>
+            <button id="restart">重启</button>
+          </div>
+          <span class="muted">API key</span>
+          <div id="key"></div>
+          <span class="muted">连通测试</span>
+          <div class="row">
+            <button id="test">发一条测试</button>
+            <span id="test-result"></span>
+          </div>
+        </div>
+      </section>
+
+      <h1>模型通道</h1>
+      <section class="card section">
+        <div class="form" id="form">
+          <label for="provider">provider</label>
+          <select id="provider">
+            <option value="anthropic">anthropic（默认，Claude Haiku）</option>
+            <option value="openai">openai（或任意 OpenAI 兼容端点）</option>
+          </select>
+          <label for="model">model</label>
+          <input id="model" />
+          <span class="hint">留空用默认；provider 选 openai 时必填</span>
+          <label for="baseUrl">baseUrl</label>
+          <input id="baseUrl" />
+          <span class="hint">接 OpenRouter、自建网关等兼容端点时改这里</span>
+          <label for="keychainService">keychainService</label>
+          <input id="keychainService" />
+          <label for="keychainAccount">keychainAccount</label>
+          <input id="keychainAccount" />
+          <label for="envKey">envKey</label>
+          <input id="envKey" />
+          <span class="hint">Keychain 里没有 key 时读这个环境变量</span>
+        </div>
+        <div class="row actions">
+          <button class="primary" id="save">保存并重启后台进程</button>
+          <span id="save-result"></span>
+        </div>
+      </section>
+      <p class="muted">本页不接收也不显示 key。key 请存进 Keychain 或设成环境变量。</p>
+    </main>
+  </body>
+</html>

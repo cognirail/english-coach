@@ -16,6 +16,6 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["daemon/**/*.ts", "review/**/*.ts", "eslint.config.mjs"],
+  "include": ["daemon/**/*.ts", "ui/**/*.ts", "eslint.config.mjs"],
   "exclude": ["node_modules"]
 }
