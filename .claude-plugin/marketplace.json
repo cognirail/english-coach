@@ -1,0 +1,11 @@
+{
+  "name": "english-coach",
+  "owner": { "name": "cognirail" },
+  "plugins": [
+    {
+      "name": "english-coach",
+      "description": "English writing coach for every prompt you send to Claude Code",
+      "source": "./"
+    }
+  ]
+}

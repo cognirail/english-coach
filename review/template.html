@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>english-coach 记录</title>
+    <style>
+      :root {
+        --bg: #fafaf8;
+        --fg: #1f2328;
+        --muted: #6b7280;
+        --card: #fff;
+        --line: #e5e7eb;
+        --bad: #b42318;
+        --good: #067647;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181c;
+          --fg: #e6e6e6;
+          --muted: #9aa0a6;
+          --card: #1e2126;
+          --line: #2e3238;
+          --bad: #f97066;
+          --good: #47cd89;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          15px/1.6 -apple-system,
+          'PingFang SC',
+          sans-serif;
+      }
+      main {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 32px 20px 64px;
+      }
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 24px;
+        align-items: baseline;
+        margin-bottom: 24px;
+      }
+      h1 {
+        font-size: 22px;
+        margin: 0;
+      }
+      .stat {
+        color: var(--muted);
+      }
+      input {
+        flex: 1 1 220px;
+        padding: 6px 10px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        background: var(--card);
+        color: var(--fg);
+        font: inherit;
+      }
+      h2 {
+        font-size: 15px;
+        color: var(--muted);
+        margin: 28px 0 8px;
+        font-weight: 600;
+      }
+      article {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin-bottom: 10px;
+      }
+      .time {
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 8px;
+      }
+      .text {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      ol {
+        margin: 6px 0 0;
+        padding-left: 20px;
+      }
+      del {
+        color: var(--bad);
+      }
+      ins {
+        color: var(--good);
+        text-decoration: none;
+      }
+      .why {
+        color: var(--muted);
+      }
+      details {
+        margin-top: 8px;
+      }
+      summary {
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .warn {
+        color: var(--bad);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>english-coach 记录</h1>
+        <span class="stat" id="stat"></span>
+        <input id="q" type="search" placeholder="搜原文 / 纠错" />
+      </header>
+      <div id="list"></div>
+    </main>
+    <script id="data" type="application/json">
+      __DATA__
+    </script>
+    <script>
+      // 只用 textContent 写入：记录是用户原文，含任意字符
+      const { records, bad } = JSON.parse(document.getElementById('data').textContent);
+      const el = (tag, cls, text) => {
+        const n = document.createElement(tag);
+        if (cls) n.className = cls;
+        if (text != null) n.textContent = text;
+        return n;
+      };
+      const pad = (n) => String(n).padStart(2, '0');
+      const dayOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+      const fixes = records.reduce(
+        (s, r) => s + (r.feedback ? r.feedback.corrections.length : 0),
+        0,
+      );
+      const days = new Set(records.map((r) => dayOf(new Date(r.ts)))).size;
+      document.getElementById('stat').textContent =
+        `${records.length} 条 · ${days} 天 · ${fixes} 处纠错${bad ? ` · 跳过 ${bad} 行坏数据` : ''}`;
+
+      function card(r) {
+        const a = el('article');
+        a.append(
+          el(
+            'div',
+            'time',
+            new Date(r.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+          ),
+        );
+        a.append(el('div', 'label', '原文'), el('div', 'text', r.prompt));
+        const f = r.feedback;
+        if (f && f.corrections.length) {
+          const ol = el('ol');
+          for (const c of f.corrections) {
+            const li = el('li');
+            li.append(
+              el('del', null, c.from),
+              ' → ',
+              el('ins', null, c.to),
+              ' ',
+              el('span', 'why', c.why),
+            );
+            ol.append(li);
+          }
+          a.append(el('div', 'label', '纠错'), ol);
+        }
+        a.append(el('div', 'label', '修正版'), el('div', 'text', f ? f.revised : r.corrected));
+        if (f) {
+          const d = el('details');
+          d.append(
+            el('summary', null, '中译'),
+            el('div', 'label', '原文中译'),
+            el('div', 'text', f.translation),
+            el('div', 'label', '修正版中译'),
+            el('div', 'text', f.revisedTranslation),
+          );
+          a.append(d);
+        } else if (r.raw) {
+          const d = el('details');
+          d.append(el('summary', null, '完整反馈（未结构化）'), el('div', 'text', r.raw));
+          a.append(d);
+        }
+        if (r.error) a.append(el('div', 'warn', `完整反馈失败：${r.error}`));
+        a.dataset.search = [
+          r.prompt,
+          r.corrected,
+          f ? f.corrections.map((c) => `${c.from} ${c.to} ${c.why}`).join(' ') : '',
+        ]
+          .join(' ')
+          .toLowerCase();
+        return a;
+      }
+
+      const list = document.getElementById('list');
+      let current = '';
+      for (const r of records) {
+        const day = dayOf(new Date(r.ts));
+        if (day !== current) {
+          current = day;
+          list.append(el('h2', null, day));
+        }
+        list.append(card(r));
+      }
+      if (!records.length)
+        list.append(el('p', 'stat', '还没有记录：写一条 8 个词以上的英文 prompt 试试。'));
+
+      document.getElementById('q').addEventListener('input', (e) => {
+        const q = e.target.value.trim().toLowerCase();
+        for (const a of list.querySelectorAll('article'))
+          a.hidden = q !== '' && !a.dataset.search.includes(q);
+        for (const h of list.querySelectorAll('h2')) {
+          let n = h.nextElementSibling,
+            any = false;
+          while (n && n.tagName === 'ARTICLE') {
+            any ||= !n.hidden;
+            n = n.nextElementSibling;
+          }
+          h.hidden = !any;
+        }
+      });
+    </script>
+  </body>
+</html>

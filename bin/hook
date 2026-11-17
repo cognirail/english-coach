@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# =============================================================================
+# hook —— english-coach 的 UserPromptSubmit 启动器：把 hook 的 stdin 原样 POST 给本机常驻 daemon，响应原样透传。
+#
+# 用法     bash "${CLAUDE_PLUGIN_ROOT}/bin/hook" < hook-input.json
+# 流程     ① POST unix socket /review → 有响应就原样打到 stdout（204 空体 = 跳过，不输出）
+#          ② 连不上（curl 7）：daemon 崩了或 SessionStart 没拉起 → node daemon.ts start（等就绪约 3 秒）后重试一次；超时不重试
+#          ③ 仍连不上 → 只输出一条 systemMessage 提示，不在 hook 里直接调 API（不走冷启）
+# 退出码   永远 0：本 hook 只加旁注，从不拦 prompt。
+# =============================================================================
+set -u
+DATA="${HOME}/.english-coach"
+SOCK="${DATA}/daemon.sock"
+PKG="$(cd "$(dirname "$0")/.." && pwd -P)"
+[[ -e "${DATA}/disabled" ]] && exit 0 # 开关：touch 即关，rm 即开，不用重开会话
+payload="$(cat)"
+
+# payload 走 stdin 不走参数：超长粘贴会撑爆 argv（macOS ARG_MAX 1MB），那会被误判成 daemon 不可用
+post() {
+  printf '%s' "${payload}" | curl -s -m 9 --unix-socket "${SOCK}" -X POST http://english-coach/review \
+    -H 'content-type: application/json' --data-binary @-
+}
+
+out="$(post)"
+code=$?
+if [[ "${code}" -eq 0 ]]; then
+  printf '%s' "${out}"
+  exit 0
+fi
+# 只有「连不上」才拉起重试（curl 7 = 连接失败，含 socket 文件不存在），预算 = 3 秒拉起 + 9 秒重试，落在 hook 的 15 秒内；
+# 超时等其他失败说明 daemon 在但慢，再请求一轮会超预算，直接放弃
+if [[ "${code}" -ne 7 ]]; then
+  printf '{"systemMessage":"english-coach: 本条未检查（curl 退出码 %s）。日志：%s/logs/daemon.log"}' "${code}" "${DATA}"
+  exit 0
+fi
+node "${PKG}/daemon/daemon.ts" start > /dev/null 2>&1
+if out="$(post)"; then
+  printf '%s' "${out}"
+  exit 0
+fi
+printf '{"systemMessage":"english-coach: 常驻进程不可用，本条未检查。日志：%s/logs/daemon.log"}' "${DATA}"
+exit 0

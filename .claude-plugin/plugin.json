@@ -1,0 +1,9 @@
+{
+  "name": "english-coach",
+  "version": "0.2.0",
+  "description": "English writing coach for Claude Code: every English prompt gets a corrected version (as a side note for Claude) plus full feedback you can review in a local HTML page.",
+  "author": { "name": "cognirail" },
+  "repository": "https://github.com/cognirail/english-coach",
+  "license": "MIT",
+  "hooks": "./hooks/claude.json"
+}

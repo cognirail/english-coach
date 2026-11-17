@@ -1,0 +1,26 @@
+{
+  "name": "english-coach",
+  "private": true,
+  "type": "module",
+  "description": "Claude Code plugin: English writing coach for every prompt. Runtime has zero dependencies; devDependencies are lint / typecheck only.",
+  "license": "MIT",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test daemon/daemon.test.ts review/review.test.ts",
+    "lint": "eslint",
+    "lint:fix": "eslint --fix . && prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "prettier": "@cognirail/eslint-config/prettier",
+  "devDependencies": {
+    "@cognirail/eslint-config": "3.1.1",
+    "@types/node": "24.13.5",
+    "eslint": "10.10.0",
+    "prettier": "3.9.7",
+    "typescript": "6.0.3"
+  }
+}
