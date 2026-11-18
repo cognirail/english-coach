@@ -1,4 +1,4 @@
-// server 的契约：Host 不是 127.0.0.1:<端口> 拒绝（DNS rebinding）· /api 无 token 拒绝 · 静态只有白名单且带 CSP ·
+// server 的契约：Host 不是 127.0.0.1:<端口> 拒绝（DNS rebinding）· 非 GET 接口不是 JSON 拒绝（CSRF）· 静态只有白名单且带 CSP ·
 // 设置只收已知字段、校验后落盘并重启 daemon · 开关落 disabled 文件 · 连通测试的错误原样回给页面。全部用注入的假副作用，不出网。
 import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -28,7 +28,6 @@ const fakeModel: Complete = (system, user) => {
     ),
   );
 };
-const TOKEN = 'a'.repeat(32);
 const calls = { restart: 0 };
 let server: http.Server;
 let base = '';
@@ -37,7 +36,6 @@ before(async () => {
   mkdirSync(PAGES);
   writeFileSync(nodePath.join(PAGES, 'index.html'), '<p>index</p>');
   server = createUiServer({
-    token: TOKEN,
     dataDirectory: TMP,
     pagesDirectory: PAGES,
     configPath: nodePath.join(TMP, 'config.json'),
@@ -64,8 +62,7 @@ after(() => {
 const api = (
   path: string,
   init: Omit<RequestInit, 'headers'> & { headers?: Record<string, string> } = {},
-): Promise<Response> =>
-  fetch(base + path, { ...init, headers: { 'x-token': TOKEN, ...init.headers } });
+): Promise<Response> => fetch(base + path, init);
 const statusOf = async (response: Promise<Response>): Promise<number> => {
   const r = await response;
   return r.status;
@@ -81,7 +78,7 @@ const put = (path: string, body: unknown): Promise<Response> =>
 function statusWithHost(path: string, host: string): Promise<number> {
   return new Promise((resolve) => {
     http
-      .request(`${base}${path}`, { headers: { host, 'x-token': TOKEN } }, (r) => {
+      .request(`${base}${path}`, { headers: { host } }, (r) => {
         r.resume();
         resolve(r.statusCode ?? 0);
       })
@@ -89,9 +86,14 @@ function statusWithHost(path: string, host: string): Promise<number> {
   });
 }
 
-void test('安全边界：错 Host / 缺 token / 白名单外路径都拒绝；页面带 CSP', async () => {
+void test('安全边界：错 Host / 跨站表单式写请求 / 白名单外路径都拒绝；页面带 CSP', async () => {
   assert.equal(await statusWithHost('/api/settings', 'evil.example:80'), 421);
-  assert.equal(await statusOf(fetch(`${base}/api/settings`)), 401);
+  // 跨站 <form method=post> 只能发 form / text 类型：无请求体的写接口也要挡住，否则别的网站能触发连通测试花钱
+  for (const type of ['application/x-www-form-urlencoded', 'text/plain']) {
+    const r = await api('/api/test', { method: 'POST', headers: { 'content-type': type } });
+    assert.equal(r.status, 415);
+  }
+  assert.equal(await statusOf(api('/api/daemon/restart', { method: 'POST' })), 415);
   assert.equal(await statusOf(fetch(`${base}/config.json`)), 404);
   const page = await fetch(`${base}/`);
   assert.equal(page.status, 200);
@@ -124,7 +126,10 @@ void test('开关落 disabled 文件；连通测试失败原样回给页面；�
   assert.ok(existsSync(nodePath.join(TMP, 'disabled')));
   await put('/api/enabled', { enabled: true });
   assert.ok(!existsSync(nodePath.join(TMP, 'disabled')));
-  const testResponse = await api('/api/test', { method: 'POST' });
+  const testResponse = await api('/api/test', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+  });
   const t = (await testResponse.json()) as { ok: boolean; error: string };
   assert.deepEqual([t.ok, t.error], [false, 'openai 401']);
   const raw = await api('/api/enabled', { method: 'PUT', body: 'enabled=false' });
@@ -135,7 +140,7 @@ void test('健康检查不碰 Keychain；坏请求地址 400 不崩；设置只�
   const healthResponse = await api('/api/health');
   const health = (await healthResponse.json()) as { ok: boolean; lifecycle: number };
   assert.equal(health.ok, true);
-  assert.equal(health.lifecycle, 2); // ensure 只复用这个协议的服务
+  assert.equal(health.lifecycle, 3); // ensure 只复用这个协议的服务
   assert.equal(await statusWithHost('//[', `127.0.0.1:${new URL(base).port}`), 400);
   writeFileSync(
     nodePath.join(TMP, 'config.json'),

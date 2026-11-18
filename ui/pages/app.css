@@ -44,7 +44,7 @@ body {
     sans-serif;
 }
 main {
-  max-width: 920px;
+  max-width: max(920px, 70vw);
   margin: 0 auto;
   padding: 24px 20px 64px;
 }
@@ -178,8 +178,11 @@ code {
 }
 .heat-wrap {
   overflow-x: auto;
+  container-type: inline-size;
 }
 .heat {
+  /* 格子随卡片宽度伸缩，铺满一年 53–54 列；窄屏不小于 11px（横向滚动），宽屏不大于 22px */
+  --cell: clamp(11px, calc((100cqw - 24px) / 54 - 3px), 22px);
   display: grid;
   grid-template-columns: 24px auto;
   grid-template-rows: 16px auto;
@@ -191,7 +194,7 @@ code {
   grid-column: 2;
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: 11px;
+  grid-auto-columns: var(--cell);
   gap: 3px;
 }
 .months span {
@@ -200,22 +203,22 @@ code {
 .weekdays {
   grid-row: 2;
   display: grid;
-  grid-template-rows: repeat(7, 11px);
+  grid-template-rows: repeat(7, var(--cell));
   gap: 3px;
-  line-height: 11px;
+  line-height: var(--cell);
 }
 .cells {
   grid-row: 2;
   grid-column: 2;
   display: grid;
   grid-auto-flow: column;
-  grid-template-rows: repeat(7, 11px);
-  grid-auto-columns: 11px;
+  grid-template-rows: repeat(7, var(--cell));
+  grid-auto-columns: var(--cell);
   gap: 3px;
 }
 .cell {
-  width: 11px;
-  height: 11px;
+  width: var(--cell, 11px); /* 图例里的格子在 .heat 外，没有 --cell */
+  height: var(--cell, 11px);
   border-radius: 2px;
   background: var(--l0);
   outline: 1px solid rgb(27 31 35 / 6%);

@@ -2,18 +2,18 @@
 // server —— 看板的本地服务：首页（打卡网格 + 统计）、记录页、设置页，加一组 JSON 接口。
 //
 // 用法     node ui/server.ts          打开看板：确保服务在跑（见 ensure），再用默认浏览器打开
-//          node ui/server.ts ensure   确保服务在跑并刷新跳转页 open.html，不开浏览器（SessionStart 用）
+//          node ui/server.ts ensure   确保服务在跑，不开浏览器（SessionStart 用；纠错提示末行链到它的地址）
 //          node ui/server.ts serve    前台跑服务（ensure 内部用）
-// 安全     只监听 127.0.0.1 随机端口；Host 头必须是 127.0.0.1:<端口>（挡 DNS rebinding）；
-//          /api/* 必须带 x-token（随机 24 字节，经 URL 的 # 片段交给页面，不进服务端日志和 Referer）；
+// 安全     不设登录态：看板只展示本机文件，本机其他账户也能打开（README 写明）。挡的是网页：
+//          只监听 127.0.0.1 随机端口；Host 头必须是 127.0.0.1:<端口>（挡 DNS rebinding）；跨源读被同源策略挡；
+//          非 GET 接口必须 content-type: application/json，跨站页面发不出（要预检，本服务不应答 CORS），挡 CSRF；
 //          页面只有静态外链脚本，CSP 禁内联。设置页不收 key，只显示 key 在哪找到。
-// 生命周期 常驻，随会话启动拉起；状态文件 <dataDir>/ui.json（600）记 url 与 token，供复用；
+// 生命周期 常驻，随会话启动拉起；状态文件 <dataDir>/ui.json（600）记 url 与 pid，供复用；
 //          ui.json 不再记自己的 pid（被新服务接替或被删）就退出。
 // =============================================================================
 import { execFile, spawn } from 'node:child_process';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { openSync } from 'node:fs';
-import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import nodePath from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -22,13 +22,13 @@ import {
   CONFIG_PATH,
   createComplete,
   DATA_DIR,
+  daemonPid,
   DISABLED_PATH,
   getSkipReason,
   keySource,
-  OPEN_PAGE_PATH,
+  uiStatePath,
   resolveConfig,
   SHORT_SYSTEM,
-  SOCKET_PATH,
   type Complete,
   type Config,
 } from '../daemon/daemon.ts';
@@ -46,10 +46,10 @@ import {
 const HERE = nodePath.dirname(fileURLToPath(import.meta.url));
 const PAGES_DIR = nodePath.join(HERE, 'pages');
 const DAEMON_PATH = nodePath.join(HERE, '..', 'daemon', 'daemon.ts');
-const STATE_PATH = nodePath.join(DATA_DIR, 'ui.json');
-const OWNER_CHECK_MS = 10_000; // 并发拉起时跳转页可能指向退出的那个，所有者最多这么久后改回来
-// 生命周期协议：ensure 只复用同协议的服务；0.3 及以前的服务（30 分钟空闲退出，health 不带此字段）会被换掉
-const UI_LIFECYCLE = 2;
+const STATE_PATH = uiStatePath(DATA_DIR);
+const OWNER_CHECK_MS = 10_000; // 被接替后最多这么久退出
+// 生命周期协议：ensure 只复用同协议的服务；旧服务（0.3 空闲退出、0.4.0 要 token）会被换掉
+const UI_LIFECYCLE = 3;
 const MAX_BODY = 64 * 1024;
 const execFileAsync = promisify(execFile);
 
@@ -86,7 +86,6 @@ const CONFIG_FIELDS = [
 ] as const;
 
 export interface UiOptions {
-  token: string;
   dataDirectory: string;
   pagesDirectory: string;
   configPath: string;
@@ -109,15 +108,6 @@ class HttpError extends Error {
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...SECURITY_HEADERS });
   res.end(JSON.stringify(body));
-}
-
-function isTokenValid(given: string | string[] | undefined, token: string): boolean {
-  if (typeof given !== 'string') {
-    return false;
-  }
-  const a = Buffer.from(given);
-  const b = Buffer.from(token);
-  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 async function readBody(req: http.IncomingMessage): Promise<unknown> {
@@ -365,8 +355,11 @@ export function createUiServer(options: UiOptions): http.Server {
     }
     const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
     if (path.startsWith('/api/')) {
-      if (!isTokenValid(req.headers['x-token'], options.token)) {
-        sendJson(res, 401, { error: 'token 不对：从 /english-coach:dashboard 重新打开' });
+      if (
+        req.method !== 'GET' &&
+        !(req.headers['content-type'] ?? '').startsWith('application/json')
+      ) {
+        sendJson(res, 415, { error: '写接口只收 application/json' });
         return;
       }
       void respondApi(req, res, path, options);
@@ -383,33 +376,6 @@ export function createUiServer(options: UiOptions): http.Server {
 }
 
 // ---- 真实副作用：daemon 状态与重启、连通测试 ----------------------------------
-
-function daemonPid(): Promise<number | null> {
-  return new Promise((resolve) => {
-    http
-      .get({ socketPath: SOCKET_PATH, path: '/health', timeout: 500 }, (r) => {
-        let body = '';
-        r.setEncoding('utf8');
-        r.on('data', (chunk: string) => {
-          body += chunk;
-        });
-        r.on('end', () => {
-          try {
-            const { pid } = JSON.parse(body) as { pid?: unknown };
-            resolve(typeof pid === 'number' ? pid : null);
-          } catch {
-            resolve(null);
-          }
-        });
-      })
-      .on('timeout', function (this: http.ClientRequest) {
-        this.destroy();
-      })
-      .on('error', () => {
-        resolve(null);
-      });
-  });
-}
 
 /** SIGTERM 现有 daemon，等它退出后拉起新的；新进程启动时重新读 config.json。 */
 async function restartDaemon(): Promise<void> {
@@ -438,7 +404,6 @@ async function probe(config: Config): Promise<string> {
 
 interface UiState {
   url: string;
-  token: string;
   pid: number;
 }
 
@@ -450,13 +415,15 @@ async function readState(): Promise<UiState | null> {
   }
 }
 
-/** 已记录的服务活着且 token 对得上时，返回它的生命周期协议（旧版没有该字段记 0）；不在返回 null。 */
+/** 已记录的服务活着时返回它的生命周期协议（旧版没有该字段记 0）；不在返回 null。 */
 async function servingLifecycle(state: UiState): Promise<number | null> {
   try {
     const res = await fetch(new URL('/api/health', state.url), {
-      headers: { 'x-token': state.token },
       signal: AbortSignal.timeout(1000),
     });
+    if (res.status === 401) {
+      return 0; // 0.4.0 及以前要 token：活着，但是旧协议
+    }
     if (!res.ok) {
       return null;
     }
@@ -467,23 +434,8 @@ async function servingLifecycle(state: UiState): Promise<number | null> {
   }
 }
 
-const openPage = (state: UiState): string =>
-  `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${state.url}#t=${state.token}">\n`;
-
-/** 跳转页：token 写在 600 文件里，不进 /usr/bin/open 的 argv（ps 可见），也不进终端输出；临时文件 + rename，读的一方不会看到半页。 */
-async function writeOpenPage(state: UiState): Promise<void> {
-  const temporary = `${OPEN_PAGE_PATH}.${process.pid}`;
-  await writeFile(temporary, openPage(state), { mode: 0o600 });
-  await rename(temporary, OPEN_PAGE_PATH);
-}
-
 async function serve(): Promise<void> {
-  const token = process.env.EC_UI_TOKEN ?? '';
-  if (token.length < 32) {
-    throw new Error('缺少 EC_UI_TOKEN：请用 node ui/server.ts 打开，不要直接跑 serve');
-  }
   const server = createUiServer({
-    token,
     dataDirectory: DATA_DIR,
     pagesDirectory: PAGES_DIR,
     configPath: CONFIG_PATH,
@@ -500,39 +452,35 @@ async function serve(): Promise<void> {
   });
   const address = server.address() as { port: number };
   const url = `http://127.0.0.1:${address.port}/`;
-  // 先写临时文件再 rename：读的一方不会看到半个 JSON；并发 open 时后写的赢
-  const own: UiState = { url, token, pid: process.pid };
+  // 先写临时文件再 rename：读的一方不会看到半个 JSON（ensure 已串行，不会有两个服务抢写）
+  const own: UiState = { url, pid: process.pid };
   const temporary = `${STATE_PATH}.${process.pid}`;
   await writeFile(temporary, JSON.stringify(own), { mode: 0o600 });
   await rename(temporary, STATE_PATH);
   process.stdout.write(`english-coach ui ${url}\n`);
-  // 常驻不设空闲退出：提示里的链接随时可点。被接替（ui.json 换了 pid 或没了）就退，不留孤儿进程；
-  // 仍是所有者就把跳转页改回指向自己（并发拉起时 ensure 可能写的是随后退出的那个）
-  setInterval(() => void keepOwnership(own), OWNER_CHECK_MS).unref();
+  // 常驻不设空闲退出：提示里的链接随时可点。被接替（ui.json 换了 pid 或没了）就退，不留孤儿进程
+  setInterval(() => void exitIfReplaced(), OWNER_CHECK_MS).unref();
 }
 
-async function keepOwnership(own: UiState): Promise<void> {
+async function exitIfReplaced(): Promise<void> {
   const state = await readState();
   if (state?.pid !== process.pid) {
     process.exit(0);
   }
-  let current = '';
-  try {
-    current = await readFile(OPEN_PAGE_PATH, 'utf8');
-  } catch {
-    // 跳转页不在（被删）：下面重写
-  }
-  if (current !== openPage(own)) {
-    try {
-      await writeOpenPage(own);
-    } catch (error) {
-      process.stderr.write(`跳转页重写失败：${(error as Error).message}\n`); // 下一轮再试
-    }
-  }
 }
 
-/** 停掉旧协议的服务：刚用 token 验过是我们的，pid 可信；验完到这里它恰好自己退了也算达成。 */
-function stopServer(pid: number): void {
+/** 停掉旧协议的服务。端口应答不等于 pid 还是它（服务死后端口和 pid 都可能被别的进程复用），
+ *  所以发信号前用 ps 确认这个 pid 跑的就是看板服务；确认不了就不动它。 */
+async function stopServer(pid: number): Promise<void> {
+  let ps: { stdout: string };
+  try {
+    ps = await execFileAsync('/bin/ps', ['-p', String(pid), '-o', 'command=']);
+  } catch {
+    return; // ps 退出码非 0 = 没有这个进程
+  }
+  if (!/ui\/server\.ts serve\s*$/.test(ps.stdout.trim())) {
+    return;
+  }
   try {
     process.kill(pid, 'SIGTERM');
   } catch (error) {
@@ -542,23 +490,65 @@ function stopServer(pid: number): void {
   }
 }
 
-/** 服务没在跑（或是旧协议的）就后台拉起新的，然后重写跳转页；返回在跑的服务状态。 */
+const LOCK_STALE_MS = 10_000; // 大于一次 ensure 的最长耗时（起服务等 3 秒）：超过就当持锁进程已崩
+
+/** 锁文件存在多久了；刚被释放（不存在）记 0。 */
+async function lockAge(lock: string): Promise<number> {
+  try {
+    const held = await stat(lock);
+    return Date.now() - held.mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+/** ensure 跨进程串行：两个会话同时启动时只拉起一个服务，后到的等锁后复用它，不会拿到马上被接替的地址。 */
+async function withEnsureLock<T>(run: () => Promise<T>): Promise<T> {
+  const lock = `${STATE_PATH}.lock`;
+  const deadline = Date.now() + LOCK_STALE_MS + 2000;
+  for (;;) {
+    try {
+      await writeFile(lock, String(process.pid), { flag: 'wx', mode: 0o600 });
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+    if ((await lockAge(lock)) > LOCK_STALE_MS) {
+      await rm(lock, { force: true });
+    } else if (Date.now() > deadline) {
+      throw new Error(`等不到 ${lock}，确认没有卡住的 ensure 后删掉它`);
+    } else {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+  try {
+    return await run();
+  } finally {
+    await rm(lock, { force: true });
+  }
+}
+
+/** 服务没在跑（或是旧协议的）就后台拉起新的；返回在跑的服务状态。 */
 async function ensure(): Promise<UiState> {
   await mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
+  return withEnsureLock(ensureLocked);
+}
+
+async function ensureLocked(): Promise<UiState> {
   let state = await readState();
   const lifecycle = state === null ? null : await servingLifecycle(state);
   if (state === null || lifecycle !== UI_LIFECYCLE) {
     if (state !== null && lifecycle !== null) {
-      stopServer(state.pid);
+      await stopServer(state.pid);
     }
     await rm(STATE_PATH, { force: true });
     await mkdir(nodePath.join(DATA_DIR, 'logs'), { recursive: true, mode: 0o700 });
     const log = openSync(nodePath.join(DATA_DIR, 'logs', 'ui.log'), 'a', 0o600);
-    // token 走环境变量不走 argv：argv 在 ps 里对本机其他用户可见
     spawn(process.execPath, [fileURLToPath(import.meta.url), 'serve'], {
       detached: true,
       stdio: ['ignore', log, log],
-      env: { ...process.env, EC_UI_TOKEN: randomBytes(24).toString('base64url') },
     }).unref();
     const deadline = Date.now() + 3000;
     while ((state = await readState()) === null && Date.now() < deadline) {
@@ -568,13 +558,12 @@ async function ensure(): Promise<UiState> {
       throw new Error(`看板服务 3 秒内没起来，看 ${nodePath.join(DATA_DIR, 'logs', 'ui.log')}`);
     }
   }
-  await writeOpenPage(state);
   return state;
 }
 
 async function open(): Promise<void> {
   const state = await ensure();
-  await execFileAsync('/usr/bin/open', [OPEN_PAGE_PATH]);
+  await execFileAsync('/usr/bin/open', [state.url]);
   process.stdout.write(`english-coach 看板已打开：${state.url}\n`);
 }
 

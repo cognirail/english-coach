@@ -45,10 +45,10 @@ claude plugin install english-coach@english-coach
 ```
 english-coach 修正版：
 Can you refactor this function? It has too many if-else branches.
-完整反馈：file:///Users/you/.english-coach/open.html
+完整反馈：http://127.0.0.1:53817/
 ```
 
-末行是本地看板的链接，终端里 ⌘ 点开（或输入 `/english-coach:dashboard`）：
+末行是本地看板的链接（端口随机），终端里 ⌘ 点开；也可以输入 `/english-coach:dashboard`：
 
 <table>
   <tr>
@@ -89,7 +89,7 @@ security add-generic-password -s english-coach -a anthropic -w
 ```
 english-coach 修正版：
 Can you refactor this function? It has too many if-else branches.
-完整反馈：file:///Users/you/.english-coach/open.html
+完整反馈：http://127.0.0.1:53817/
 ```
 
 没看到？输入 `/english-coach:dashboard` 打开看板（链接点不开时也用它），在「设置」页点「连通测试」；日志在 `~/.english-coach/logs/daemon.log`。
@@ -114,7 +114,8 @@ Can you refactor this function? It has too many if-else branches.
 
 - 插件不经过作者运营的任何服务器。要纠错的 prompt 原文、练习用的历史错例和你的作答，会发给**你配置**的模型服务（默认 Anthropic；接网关时还经过网关），上游怎么留存由服务商的政策决定。
 - 插件自己的记录只存在本机 `~/.english-coach/`，目录权限 700。
-- key 只从 macOS Keychain 或环境变量读，不写进任何文件；看板只监听 127.0.0.1，带随机 token。
+- key 只从 macOS Keychain 或环境变量读，不写进任何文件。
+- 看板只监听 127.0.0.1，不设登录。别的网站读不到也改不了它（Host 校验 + 写接口只收 JSON），但**本机其他账户**能直接访问它：看你的记录、触发计费的模型调用，还能在设置里把模型地址改成自己的服务器，从而拿到你的 API key。多人共用的 Mac 上不要让看板常驻（`claude plugin disable english-coach@english-coach`）。
 
 ## 一条消息发生什么
 
@@ -192,8 +193,7 @@ key 存 `security add-generic-password -s english-coach -a openai -w`，或设 `
 ├── records/<日期>.jsonl    # 每条一行，只追加
 ├── practice/<日期>.jsonl   # 练习，每轮一行，只追加
 ├── daemon.sock             # 唯一事实：谁在这个路径上应答谁就是 daemon
-├── ui.json                 # 看板地址与访问 token（600），看板换新进程即失效
-├── open.html               # 看板跳转页（600），提示末行链接指向它；token 不进命令行参数和终端输出
+├── ui.json                 # 看板地址与进程号（600）；提示末行的链接从这里取地址
 └── logs/{daemon,ui}.log
 ```
 

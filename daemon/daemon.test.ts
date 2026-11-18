@@ -4,7 +4,7 @@
 // 运行：pnpm test
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import nodeOs from 'node:os';
 import nodePath from 'node:path';
@@ -171,6 +171,11 @@ async function waitForRecords(dataDirectory: string): Promise<CoachRecord[]> {
 
 void test('/review 成功：additionalContext 给 Claude、systemMessage 给人，完整反馈追加到当天 JSONL', async () => {
   await withServer('ok', fakeComplete('ok'), async (post, dataDirectory) => {
+    // 看板在跑：末行直接链到它的地址
+    writeFileSync(
+      nodePath.join(dataDirectory, 'ui.json'),
+      JSON.stringify({ url: 'http://127.0.0.1:4321/', pid: 1 }),
+    );
     const r = await post({ prompt: ENGLISH, hook_event_name: 'UserPromptSubmit' });
     assert.equal(r.status, 200);
     const out = JSON.parse(r.body) as {
@@ -183,7 +188,7 @@ void test('/review 成功：additionalContext 给 Claude、systemMessage 给人�
     );
     assert.match(
       out.systemMessage,
-      /^english-coach 修正版：\nI suddenly have an idea\.\n完整反馈：file:\/\/\/.+\/open\.html$/,
+      /^english-coach 修正版：\nI suddenly have an idea\.\n完整反馈：http:\/\/127\.0\.0\.1:4321\/$/,
     );
     const [rec] = await waitForRecords(dataDirectory);
     assert.ok(rec !== undefined);
@@ -217,6 +222,11 @@ void test('/review 完整反馈失败：记录带 error，响应不受影响', a
   await withServer('full-fails', fakeComplete('full-fails'), async (post, dataDirectory) => {
     const r = await post({ prompt: ENGLISH });
     assert.equal(r.status, 200);
+    // 看板没起过（无 ui.json）：末行退回斜杠命令
+    assert.match(
+      (JSON.parse(r.body) as { systemMessage: string }).systemMessage,
+      /完整反馈：\/english-coach:dashboard$/,
+    );
     const [rec] = await waitForRecords(dataDirectory);
     assert.ok(rec !== undefined);
     assert.equal(rec.feedback, null);
