@@ -133,8 +133,9 @@ void test('开关落 disabled 文件；连通测试失败原样回给页面；�
 
 void test('健康检查不碰 Keychain；坏请求地址 400 不崩；设置只回已知字段', async () => {
   const healthResponse = await api('/api/health');
-  const health = (await healthResponse.json()) as { ok: boolean };
+  const health = (await healthResponse.json()) as { ok: boolean; lifecycle: number };
   assert.equal(health.ok, true);
+  assert.equal(health.lifecycle, 2); // ensure 只复用这个协议的服务
   assert.equal(await statusWithHost('//[', `127.0.0.1:${new URL(base).port}`), 400);
   writeFileSync(
     nodePath.join(TMP, 'config.json'),

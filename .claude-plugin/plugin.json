@@ -1,7 +1,7 @@
 {
   "name": "english-coach",
-  "version": "0.3.0",
-  "description": "English writing coach for Claude Code: every English prompt gets a corrected version (as a side note for Claude) plus a local dashboard with streak heatmap, accuracy trend and settings.",
+  "version": "0.4.0",
+  "description": "English writing coach for Claude Code: qualifying English prompts get a corrected version (as a side note for Claude) plus a local dashboard with streak heatmap, accuracy trend and settings.",
   "author": { "name": "cognirail" },
   "repository": "https://github.com/cognirail/english-coach",
   "license": "MIT",

@@ -35,6 +35,8 @@ export const CONFIG_PATH = nodePath.join(DATA_DIR, 'config.json');
 export const DISABLED_PATH = nodePath.join(DATA_DIR, 'disabled');
 // 迁移标记：backfill 改写分片期间存在；daemon 见到就不启动，hook 见到就跳过，改写和追加不会同时发生
 export const MIGRATING_PATH = nodePath.join(DATA_DIR, 'migrating');
+// 看板跳转页：每次纠错的提示末行给它的 file:// 链接，终端里点开即进看板；内容由 ui/server.ts 写（含 token，600）
+export const OPEN_PAGE_PATH = nodePath.join(DATA_DIR, 'open.html');
 const SHORT_TIMEOUT_MS = 7000; // hook 侧 curl -m 9、Claude 侧 timeout 10：留出两层余量
 const FULL_TIMEOUT_MS = 30_000;
 const HEARTBEAT_MS = 240_000; // 实测空闲 300s 连接仍在，取 4 分钟
@@ -609,7 +611,7 @@ export function createServer(options: ServerOptions): http.Server {
           hookEventName: 'UserPromptSubmit',
           additionalContext: `english-coach（英文纠错插件，用户已知）：下面是用户这条英文原文的修正版，只用它来理解意图；修正版与原文冲突时以原文为准。不要在回复里评论、复述或致谢这段修正，用户在别处看反馈。\n\n${corrected}`,
         },
-        systemMessage: `english-coach 修正版：\n${corrected}\n完整反馈：/english-coach:dashboard`,
+        systemMessage: `english-coach 修正版：\n${corrected}\n完整反馈：${pathToFileURL(OPEN_PAGE_PATH).href}`,
       });
       // 脱离响应：完整反馈落当天 JSONL，失败也写一条让人看见
       const pending = recordFullFeedback(options, at, prompt, corrected);

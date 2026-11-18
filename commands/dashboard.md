@@ -1,5 +1,5 @@
 ---
-description: 打开 english-coach 看板（概览打卡网格 · 全部记录 · 设置）
+description: 打开 english-coach 看板（概览 · 记录 · 练习 · 设置）
 allowed-tools: Bash(node:*)
 ---
 

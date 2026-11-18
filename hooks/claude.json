@@ -7,6 +7,11 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/daemon/daemon.ts\" start",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/ui/server.ts\" ensure",
+            "timeout": 10
           }
         ]
       }

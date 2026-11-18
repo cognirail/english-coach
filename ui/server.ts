@@ -1,12 +1,14 @@
 // =============================================================================
 // server —— 看板的本地服务：首页（打卡网格 + 统计）、记录页、设置页，加一组 JSON 接口。
 //
-// 用法     node ui/server.ts          打开看板：有活着的服务就复用，没有就后台拉起一个，再用默认浏览器打开
-//          node ui/server.ts serve    前台跑服务（open 内部用）
+// 用法     node ui/server.ts          打开看板：确保服务在跑（见 ensure），再用默认浏览器打开
+//          node ui/server.ts ensure   确保服务在跑并刷新跳转页 open.html，不开浏览器（SessionStart 用）
+//          node ui/server.ts serve    前台跑服务（ensure 内部用）
 // 安全     只监听 127.0.0.1 随机端口；Host 头必须是 127.0.0.1:<端口>（挡 DNS rebinding）；
 //          /api/* 必须带 x-token（随机 24 字节，经 URL 的 # 片段交给页面，不进服务端日志和 Referer）；
 //          页面只有静态外链脚本，CSP 禁内联。设置页不收 key，只显示 key 在哪找到。
-// 生命周期 30 分钟没有请求自动退出；状态文件 <dataDir>/ui.json（600）记 url 与 token，供下次复用。
+// 生命周期 常驻，随会话启动拉起；状态文件 <dataDir>/ui.json（600）记 url 与 token，供复用；
+//          ui.json 不再记自己的 pid（被新服务接替或被删）就退出。
 // =============================================================================
 import { execFile, spawn } from 'node:child_process';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
@@ -23,6 +25,7 @@ import {
   DISABLED_PATH,
   getSkipReason,
   keySource,
+  OPEN_PAGE_PATH,
   resolveConfig,
   SHORT_SYSTEM,
   SOCKET_PATH,
@@ -44,9 +47,9 @@ const HERE = nodePath.dirname(fileURLToPath(import.meta.url));
 const PAGES_DIR = nodePath.join(HERE, 'pages');
 const DAEMON_PATH = nodePath.join(HERE, '..', 'daemon', 'daemon.ts');
 const STATE_PATH = nodePath.join(DATA_DIR, 'ui.json');
-// open 时交给浏览器的跳转页：token 写在 600 文件里，不进 /usr/bin/open 的 argv（ps 可见）
-const BOOTSTRAP_PATH = nodePath.join(DATA_DIR, 'open.html');
-const IDLE_EXIT_MS = 30 * 60_000;
+const OWNER_CHECK_MS = 10_000; // 并发拉起时跳转页可能指向退出的那个，所有者最多这么久后改回来
+// 生命周期协议：ensure 只复用同协议的服务；0.3 及以前的服务（30 分钟空闲退出，health 不带此字段）会被换掉
+const UI_LIFECYCLE = 2;
 const MAX_BODY = 64 * 1024;
 const execFileAsync = promisify(execFile);
 
@@ -93,7 +96,6 @@ export interface UiOptions {
   restartDaemon: () => Promise<void>;
   probe: (config: Config) => Promise<string>;
   complete: (config: Config) => Complete; // 练习出题与判分用；测试注入假的，不出网
-  onRequest?: () => void;
 }
 
 class HttpError extends Error {
@@ -281,7 +283,7 @@ const ROUTES: Record<string, Route> = {
     });
     return { category, items: graded, correct: graded.filter((g) => g.correct).length };
   },
-  'GET /api/health': () => Promise.resolve({ ok: true, pid: process.pid }),
+  'GET /api/health': () => Promise.resolve({ ok: true, pid: process.pid, lifecycle: UI_LIFECYCLE }),
   'GET /api/settings': (_req, options) => settingsView(options),
   'PUT /api/settings': async (req, options) => {
     const config = cleanConfigInput(await readBody(req));
@@ -351,7 +353,6 @@ async function respondStatic(
 
 export function createUiServer(options: UiOptions): http.Server {
   const server = http.createServer((req, res) => {
-    options.onRequest?.();
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
     if (req.headers.host !== `127.0.0.1:${port}`) {
@@ -449,25 +450,31 @@ async function readState(): Promise<UiState | null> {
   }
 }
 
-/** 已记录的服务是否还活着且 token 对得上。 */
-async function isServing(state: UiState): Promise<boolean> {
+/** 已记录的服务活着且 token 对得上时，返回它的生命周期协议（旧版没有该字段记 0）；不在返回 null。 */
+async function servingLifecycle(state: UiState): Promise<number | null> {
   try {
     const res = await fetch(new URL('/api/health', state.url), {
       headers: { 'x-token': state.token },
       signal: AbortSignal.timeout(1000),
     });
-    return res.ok;
+    if (!res.ok) {
+      return null;
+    }
+    const body = (await res.json()) as { lifecycle?: unknown };
+    return typeof body.lifecycle === 'number' ? body.lifecycle : 0;
   } catch {
-    return false;
+    return null;
   }
 }
 
-/** 只删记着自己 pid 的状态文件：并发起了两个服务时，先退出的不能删掉另一个的。 */
-async function removeOwnState(): Promise<void> {
-  const state = await readState();
-  if (state?.pid === process.pid) {
-    await rm(STATE_PATH, { force: true });
-  }
+const openPage = (state: UiState): string =>
+  `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${state.url}#t=${state.token}">\n`;
+
+/** 跳转页：token 写在 600 文件里，不进 /usr/bin/open 的 argv（ps 可见），也不进终端输出；临时文件 + rename，读的一方不会看到半页。 */
+async function writeOpenPage(state: UiState): Promise<void> {
+  const temporary = `${OPEN_PAGE_PATH}.${process.pid}`;
+  await writeFile(temporary, openPage(state), { mode: 0o600 });
+  await rename(temporary, OPEN_PAGE_PATH);
 }
 
 async function serve(): Promise<void> {
@@ -475,13 +482,6 @@ async function serve(): Promise<void> {
   if (token.length < 32) {
     throw new Error('缺少 EC_UI_TOKEN：请用 node ui/server.ts 打开，不要直接跑 serve');
   }
-  let idle: NodeJS.Timeout | undefined;
-  const bump = (): void => {
-    clearTimeout(idle);
-    idle = setTimeout(() => {
-      void removeOwnState().finally(() => process.exit(0));
-    }, IDLE_EXIT_MS);
-  };
   const server = createUiServer({
     token,
     dataDirectory: DATA_DIR,
@@ -493,26 +493,64 @@ async function serve(): Promise<void> {
     restartDaemon,
     probe,
     complete: createComplete,
-    onRequest: bump,
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
   });
-  bump();
   const address = server.address() as { port: number };
   const url = `http://127.0.0.1:${address.port}/`;
   // 先写临时文件再 rename：读的一方不会看到半个 JSON；并发 open 时后写的赢
+  const own: UiState = { url, token, pid: process.pid };
   const temporary = `${STATE_PATH}.${process.pid}`;
-  await writeFile(temporary, JSON.stringify({ url, token, pid: process.pid }), { mode: 0o600 });
+  await writeFile(temporary, JSON.stringify(own), { mode: 0o600 });
   await rename(temporary, STATE_PATH);
   process.stdout.write(`english-coach ui ${url}\n`);
+  // 常驻不设空闲退出：提示里的链接随时可点。被接替（ui.json 换了 pid 或没了）就退，不留孤儿进程；
+  // 仍是所有者就把跳转页改回指向自己（并发拉起时 ensure 可能写的是随后退出的那个）
+  setInterval(() => void keepOwnership(own), OWNER_CHECK_MS).unref();
 }
 
-async function open(): Promise<void> {
+async function keepOwnership(own: UiState): Promise<void> {
+  const state = await readState();
+  if (state?.pid !== process.pid) {
+    process.exit(0);
+  }
+  let current = '';
+  try {
+    current = await readFile(OPEN_PAGE_PATH, 'utf8');
+  } catch {
+    // 跳转页不在（被删）：下面重写
+  }
+  if (current !== openPage(own)) {
+    try {
+      await writeOpenPage(own);
+    } catch (error) {
+      process.stderr.write(`跳转页重写失败：${(error as Error).message}\n`); // 下一轮再试
+    }
+  }
+}
+
+/** 停掉旧协议的服务：刚用 token 验过是我们的，pid 可信；验完到这里它恰好自己退了也算达成。 */
+function stopServer(pid: number): void {
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') {
+      throw error;
+    }
+  }
+}
+
+/** 服务没在跑（或是旧协议的）就后台拉起新的，然后重写跳转页；返回在跑的服务状态。 */
+async function ensure(): Promise<UiState> {
   await mkdir(DATA_DIR, { recursive: true, mode: 0o700 });
   let state = await readState();
-  if (state === null || !(await isServing(state))) {
+  const lifecycle = state === null ? null : await servingLifecycle(state);
+  if (state === null || lifecycle !== UI_LIFECYCLE) {
+    if (state !== null && lifecycle !== null) {
+      stopServer(state.pid);
+    }
     await rm(STATE_PATH, { force: true });
     await mkdir(nodePath.join(DATA_DIR, 'logs'), { recursive: true, mode: 0o700 });
     const log = openSync(nodePath.join(DATA_DIR, 'logs', 'ui.log'), 'a', 0o600);
@@ -530,13 +568,13 @@ async function open(): Promise<void> {
       throw new Error(`看板服务 3 秒内没起来，看 ${nodePath.join(DATA_DIR, 'logs', 'ui.log')}`);
     }
   }
-  const link = `${state.url}#t=${state.token}`;
-  await writeFile(
-    BOOTSTRAP_PATH,
-    `<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=${link}">\n`,
-    { mode: 0o600 },
-  );
-  await execFileAsync('/usr/bin/open', [BOOTSTRAP_PATH]);
+  await writeOpenPage(state);
+  return state;
+}
+
+async function open(): Promise<void> {
+  const state = await ensure();
+  await execFileAsync('/usr/bin/open', [OPEN_PAGE_PATH]);
   process.stdout.write(`english-coach 看板已打开：${state.url}\n`);
 }
 
@@ -544,6 +582,8 @@ if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.a
   try {
     if (process.argv[2] === 'serve') {
       await serve();
+    } else if (process.argv[2] === 'ensure') {
+      await ensure();
     } else {
       await open();
     }

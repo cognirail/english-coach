@@ -60,7 +60,8 @@ export function collectMaterial(
       if (c.category !== category || !isEnglishCorrection(c)) {
         continue;
       }
-      if (examples.length < MAX_EXAMPLES) {
+      // 同一个错反复犯只列一次，素材和页面上的「你写错过的」才不会被一句刷屏
+      if (examples.length < MAX_EXAMPLES && examples.every((example) => example.from !== c.from)) {
         examples.push({ from: c.from, to: c.to });
       }
       if (c.rule !== undefined && rules.size < MAX_RULES) {
