@@ -18,7 +18,7 @@
 // 落盘：记录含用户的英文原文与反馈，这是本功能的目的；目录 700。不记 key；上游错误只记状态码与错误类型，不记正文（正文可能回显 key）。
 // =============================================================================
 import { execFile, spawn } from 'node:child_process';
-import { openSync } from 'node:fs';
+import { existsSync, openSync } from 'node:fs';
 import { appendFile, chmod, mkdir, readFile, rename, rm } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
@@ -33,6 +33,8 @@ export const DATA_DIR =
 export const SOCKET_PATH = nodePath.join(DATA_DIR, 'daemon.sock');
 export const CONFIG_PATH = nodePath.join(DATA_DIR, 'config.json');
 export const DISABLED_PATH = nodePath.join(DATA_DIR, 'disabled');
+// 迁移标记：backfill 改写分片期间存在；daemon 见到就不启动，hook 见到就跳过，改写和追加不会同时发生
+export const MIGRATING_PATH = nodePath.join(DATA_DIR, 'migrating');
 const SHORT_TIMEOUT_MS = 7000; // hook 侧 curl -m 9、Claude 侧 timeout 10：留出两层余量
 const FULL_TIMEOUT_MS = 30_000;
 const HEARTBEAT_MS = 240_000; // 实测空闲 300s 连接仍在，取 4 分钟
@@ -52,18 +54,43 @@ export const SHORT_SYSTEM = [
   'Output only the rewritten message, no preamble.',
 ].join(' ');
 
-const FULL_SYSTEM = [
+/** 纠错分类：看板的错误分布与专项练习按它分组。改这张表要同步 ui/pages/app.js 的 CATEGORY_LABEL。 */
+export const CATEGORIES = [
+  'tense', // 时态
+  'agreement', // 主谓一致
+  'article', // 冠词
+  'preposition', // 介词
+  'plural', // 单复数 / 可数性
+  'word-choice', // 用词与搭配
+  'word-order', // 语序
+  'missing-word', // 缺词
+  'redundancy', // 冗余
+  'spelling', // 拼写
+  'punctuation', // 标点与大小写
+  'other',
+] as const;
+export type Category = (typeof CATEGORIES)[number];
+
+export const FULL_SYSTEM = [
   '你是一位给中国软件工程师做英文写作辅导的老师。他用英文给 AI 编程助手写消息。',
   '只输出一个 JSON 对象，不加代码围栏、开场白或结语。四个字段，除 corrections 外都是单个字符串（不是数组）：',
   '"translation"：把他的英文原文逐句翻译成中文，合成一段字符串；写错的地方就按错的意思译，让他看到自己写出来的到底是什么。',
-  '"corrections"：数组，每项 {"from": 原片段, "to": 改法, "why": 一句中文原因}。只列真正的错误和明显不地道的表达，不挑风格；没有就给空数组。',
+  `"corrections"：数组，每项 {"from": 原片段, "to": 改法, "category": 分类, "why": 一句中文原因, "rule": 一句中文语法规则}。只列真正的错误和明显不地道的表达，不挑风格；原文里夹的中文片段不是英文错误，不要列；没有就给空数组。category 只能取 ${CATEGORIES.join(' / ')} 之一。rule 写这条错误背后可推广的规则（例：「there is/are 后接名词，单复数跟后面的名词走」），不重复 why 里针对这句的话。`,
   '"revised"：修正版英文。只修语法和冗余，不改句序，不删信息；代码、路径、引号内文字原样保留。',
   '"revisedTranslation"：修正版的中文翻译。',
 ].join('\n');
 
+export interface Correction {
+  from: string;
+  to: string;
+  why: string;
+  category?: Category; // 0.3 前的记录没有
+  rule?: string; // 0.3 前的记录没有
+}
+
 export interface Feedback {
   translation: string;
-  corrections: { from: string; to: string; why: string }[];
+  corrections: Correction[];
   revised: string;
   revisedTranslation: string;
 }
@@ -87,6 +114,23 @@ function isCorrection(c: unknown): boolean {
   return typeof from === 'string' && typeof to === 'string' && typeof why === 'string';
 }
 
+/** 模型给的分类不在表里（或缺）归 other；rule 不是字符串就丢掉。 */
+function normalizeCorrection(c: Correction): Correction {
+  const out: Correction = {
+    from: c.from,
+    to: c.to,
+    why: c.why,
+    category: CATEGORIES.find((k) => k === c.category) ?? 'other',
+  };
+  if (typeof c.rule === 'string' && c.rule.trim() !== '') {
+    out.rule = c.rule.trim();
+  }
+  return out;
+}
+
+/** 纠的是英文本身：from 含汉字的是在翻译夹进来的中文（0.3 前约 15% 是这种），不算英文错误。 */
+export const isEnglishCorrection = (c: Correction): boolean => !/\p{Script=Han}/u.test(c.from);
+
 /** 英文词数（规则见 WORD_RE）；统计页按它算每百词错误数。 */
 export function countEnglishWords(text: string): number {
   return text.match(WORD_RE)?.length ?? 0;
@@ -105,7 +149,7 @@ export function parseFeedback(text: string): Feedback | null {
       typeof v.revised === 'string' &&
       typeof v.revisedTranslation === 'string'
     ) {
-      return v as Feedback;
+      return { ...(v as Feedback), corrections: v.corrections.map((c) => normalizeCorrection(c)) };
     }
   } catch {
     // 不是 JSON：返回 null，调用方把原文存进 raw，记录不丢
@@ -127,6 +171,33 @@ interface HookOutput {
 
 // ---- 跳过规则 ----------------------------------------------------------------
 
+// 一行像终端内容：提示符开头（$ ❯ % >）、brew 式 ==> 输出、不是英文单词的命令名（git · cd · du），
+// 或会被当英文用的命令名（find · make · open）后紧跟 flag / 路径。任意单词 + 路径不算：「check /tmp/a.md for …」是英文。
+// 2026-11-12 / 11-16 两条粘贴的命令被当英文纠错，修正版原样照抄，没有学习价值
+const PROMPT_OR_OUTPUT_RE = /^\s*(?:[$❯%>]\s|==>)/;
+const COMMANDS = new Set(
+  'git brew pnpm npm npx kubectl sudo cd ls du rm mv cp mkdir chmod curl ssh grep'.split(' '),
+);
+const WORDY_COMMANDS = new Set(
+  'cat find open make head tail echo node docker python python3 which export'.split(' '),
+);
+const FLAG_OR_PATH_RE = /^(?:-{1,2}[A-Za-z]|[~./])/;
+
+function isShellLine(line: string): boolean {
+  if (PROMPT_OR_OUTPUT_RE.test(line)) {
+    return true;
+  }
+  const [first = '', second = ''] = line.trim().split(/\s+/, 2);
+  return COMMANDS.has(first) || (WORDY_COMMANDS.has(first) && FLAG_OR_PATH_RE.test(second));
+}
+
+/** 超过一半的非空行像终端内容：粘贴的命令或输出，不是手写英文；单行须带提示符才算。 */
+function isShellPaste(text: string): boolean {
+  const lines = text.split('\n').filter((l) => l.trim() !== '');
+  const shellLines = lines.filter((l) => isShellLine(l)).length;
+  return shellLines * 2 > lines.length && (lines.length > 1 || /^\s*[$❯%]\s/.test(text));
+}
+
 /** 不该纠错的输入返回原因，该纠错返回 null。 */
 export function getSkipReason(prompt: string): string | null {
   const text = prompt.trim();
@@ -146,6 +217,9 @@ export function getSkipReason(prompt: string): string | null {
   }
   if (text.includes('```')) {
     return 'code-block';
+  }
+  if (isShellPaste(text)) {
+    return 'shell';
   }
   if (text.length > MAX_CHARS) {
     return 'too-long';
@@ -549,22 +623,35 @@ export function createServer(options: ServerOptions): http.Server {
 const PENDING = new Set<Promise<void>>();
 const DRAIN_MS = 20_000; // 完整反馈单次请求上限之上留余量
 
-/** 本机 socket 上的 daemon 是否在应答 /health。 */
-function isAlive(): Promise<boolean> {
+/** 本机 socket 上应答 /health 的 daemon 的 pid；没人应答返回 null。 */
+export function daemonPid(): Promise<number | null> {
   return new Promise((resolve) => {
     http
       .get({ socketPath: SOCKET_PATH, path: '/health', timeout: 300 }, (r) => {
-        r.resume();
-        resolve(r.statusCode === 200);
+        let body = '';
+        r.setEncoding('utf8');
+        r.on('data', (chunk: string) => {
+          body += chunk;
+        });
+        r.on('end', () => {
+          try {
+            const { pid } = JSON.parse(body) as { pid?: unknown };
+            resolve(typeof pid === 'number' && r.statusCode === 200 ? pid : null);
+          } catch {
+            resolve(null);
+          }
+        });
       })
       .on('error', () => {
-        resolve(false);
+        resolve(null);
       })
       .on('timeout', function (this: http.ClientRequest) {
         this.destroy();
       });
   });
 }
+
+const isAlive = async (): Promise<boolean> => (await daemonPid()) !== null;
 
 /** start：已在跑就静默退出；否则脱离拉起一个（detached = 新会话，hook 进程退出不连带杀掉），等 socket 就绪。 */
 async function start(): Promise<void> {
@@ -630,6 +717,9 @@ async function serve(): Promise<void> {
   await chmod(DATA_DIR, 0o700);
   if (await isAlive()) {
     return;
+  }
+  if (existsSync(MIGRATING_PATH)) {
+    throw new Error(`正在迁移记录（${MIGRATING_PATH} 存在），迁移结束后再启动`);
   }
   const config = await loadConfig();
   const server = createServer({ dataDirectory: DATA_DIR, complete: createComplete(config) });

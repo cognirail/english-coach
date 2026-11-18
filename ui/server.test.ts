@@ -6,11 +6,28 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import http from 'node:http';
 import nodeOs from 'node:os';
 import nodePath from 'node:path';
+import type { Complete } from '../daemon/daemon.ts';
 import { cleanConfigInput, createUiServer } from './server.ts';
 
 const TMP = mkdtempSync(nodePath.join(nodeOs.tmpdir(), 'english-coach-ui-'));
 const PAGES = nodePath.join(TMP, 'pages');
 const PLAIN_HTTP_URL = ['http', '//gw.local/v1'].join(':'); // 拼出来，避开明文协议 lint
+/** 假模型：出题请求回两道题，判分请求按「作答 = 参考答案」判对；作答为 skip 的题不回判定（模拟模型漏判）。 */
+const fakeModel: Complete = (system, user) => {
+  if (system.includes('改错题，只练')) {
+    return Promise.resolve(
+      '[{"sentence":"I has fixed it","answer":"I have fixed it","hint":"主语是 I"},{"sentence":"x"}]',
+    );
+  }
+  const items = JSON.parse(user) as { i: number; answer: string; response: string }[];
+  return Promise.resolve(
+    JSON.stringify(
+      items
+        .filter((item) => item.response !== 'skip')
+        .map((item) => ({ i: item.i, correct: item.answer === item.response, feedback: 'f' })),
+    ),
+  );
+};
 const TOKEN = 'a'.repeat(32);
 const calls = { restart: 0 };
 let server: http.Server;
@@ -32,6 +49,7 @@ before(async () => {
       return Promise.resolve();
     },
     probe: () => Promise.reject(new Error('openai 401')),
+    complete: () => fakeModel,
   });
   await new Promise<void>((resolve) => {
     server.listen(0, '127.0.0.1', resolve);
@@ -130,4 +148,52 @@ void test('健康检查不碰 Keychain；坏请求地址 400 不崩；设置只�
 void test('cleanConfigInput：非字符串字段拒绝；空对象即全默认', () => {
   assert.throws(() => cleanConfigInput({ model: 3 }), /model 必须是字符串/);
   assert.deepEqual(cleanConfigInput({}), {});
+});
+
+void test('练习：出题过滤字段不全的题；判分落 practice 分片；空作答不问模型直接判错；坏分类 400', async () => {
+  const post = (path: string, body: unknown): Promise<Response> =>
+    api(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  writeFileSync(nodePath.join(TMP, 'config.json'), '{}');
+  assert.equal(await statusOf(post('/api/practice/generate', { category: 'other' })), 400);
+  const generated = await post('/api/practice/generate', { category: 'tense' });
+  const { exercises } = (await generated.json()) as {
+    exercises: { sentence: string; answer: string }[];
+  };
+  assert.equal(exercises.length, 1);
+
+  const items = [
+    { ...exercises[0], response: 'I have fixed it' },
+    { sentence: 'b', answer: 'c', response: '  ' },
+    { sentence: 'it say ok', answer: 'it says ok', response: ' it  say ok ' }, // 原句没动
+  ];
+  const graded = await post('/api/practice/grade', { category: 'tense', items });
+  const result = (await graded.json()) as { correct: number; items: { feedback: string }[] };
+  assert.equal(result.correct, 1);
+  assert.equal(result.items[1]?.feedback, '没有作答');
+  assert.equal(result.items[2]?.feedback, '原句没有改动');
+  assert.equal(await statusOf(post('/api/practice/grade', { category: 'tense', items: [] })), 400);
+  // 模型漏判一题：整轮 502，不落成绩
+  const omitted = [{ sentence: 'a b', answer: 'a c', response: 'skip' }];
+  assert.equal(
+    await statusOf(post('/api/practice/grade', { category: 'tense', items: omitted })),
+    502,
+  );
+  // 结构坏但 JSON 合法的行跳过，不拖垮练习页
+  writeFileSync(
+    nodePath.join(TMP, 'practice', 'bad.jsonl'),
+    ['null', '{}', '{"category":"tense","ts":"x","items":[null]}', ''].join('\n'),
+  );
+
+  const overview = await api('/api/practice');
+  const view = (await overview.json()) as {
+    scores: { category: string; items: number; correct: number }[];
+  };
+  assert.deepEqual(
+    view.scores.map(({ category, items: n, correct }) => [category, n, correct]),
+    [['tense', 3, 1]],
+  );
 });

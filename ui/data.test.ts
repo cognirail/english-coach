@@ -84,3 +84,37 @@ void test('computeStats：连续天数今天没写不算断；最长连续；本
   assert.deepEqual(s.week.lastWeek, { count: 2, words: 4, corrections: 1 });
   assert.equal(localDay(new Date(2026, 0, 5)), '2026-01-05');
 });
+
+/** 带分类的记录；category 缺省 = 0.3 前的旧纠错。 */
+const tagged = (m: number, d: number, list: { from: string; category?: string }[]): CoachRecord => {
+  const r = rec(m, d, 'a b c d', 0);
+  if (r.feedback !== null) {
+    r.feedback.corrections = list.map((c) => ({ to: 'x', why: 'y', ...c }) as never);
+  }
+  return r;
+};
+
+void test('computeStats：错误类型按次数排序、中文片段不算、旧记录归 unlabeled；周趋势 12 周旧到新', () => {
+  const records = [
+    tagged(11, 16, [
+      { from: 'a idea', category: 'article' },
+      { from: 'has go', category: 'tense' },
+    ]),
+    tagged(11, 2, [
+      { from: 'a apple', category: 'article' },
+      { from: '没找到', category: 'word-choice' },
+    ]),
+    tagged(9, 1, [{ from: 'old one' }]),
+  ];
+  const s = computeStats(records, new Date(2026, 10, 17, 9));
+  assert.deepEqual(s.categories, [
+    { category: 'article', total: 2, recent: 2 },
+    { category: 'tense', total: 1, recent: 1 },
+    { category: 'unlabeled', total: 1, recent: 0 },
+  ]);
+  assert.equal(s.weeks.length, 12);
+  assert.equal(s.weeks.at(-1)?.start, '2026-11-16');
+  assert.equal(s.weeks.at(-1)?.count, 1);
+  assert.equal(s.weeks.at(-1)?.corrections, 2);
+  assert.equal(s.weeks.at(-3)?.corrections, 1); // 11-02 那周：中文片段那条不计
+});

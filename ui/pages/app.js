@@ -35,12 +35,30 @@ export const dayOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d
 export const errorRate = (corrections, words) => (words > 0 ? (corrections / words) * 100 : null);
 export const fmtRate = (rate) => (rate === null ? '—' : rate.toFixed(1));
 
+/** 纠错分类的中文名；与 daemon/daemon.ts 的 CATEGORIES 同一张表。 */
+export const CATEGORY_LABEL = {
+  tense: '时态',
+  agreement: '主谓一致',
+  article: '冠词',
+  preposition: '介词',
+  plural: '单复数',
+  'word-choice': '用词搭配',
+  'word-order': '语序',
+  'missing-word': '缺词',
+  redundancy: '冗余',
+  spelling: '拼写',
+  punctuation: '标点大小写',
+  other: '其他',
+  unlabeled: '未分类',
+};
+
 export function renderNav(active) {
   const nav = el('nav');
   nav.append(el('span', 'brand', 'english-coach'));
   for (const [href, label] of [
     ['/', '概览'],
     ['/review', '记录'],
+    ['/practice', '练习'],
     ['/settings', '设置'],
   ]) {
     const a = el('a', href === active ? 'active' : null, label);

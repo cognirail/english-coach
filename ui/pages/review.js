@@ -1,5 +1,5 @@
 // 记录页：按天分组的完整反馈卡片；?day=YYYY-MM-DD 只看一天（从打卡网格点进来）；搜索框过滤原文与纠错。
-import { api, dayOf, el, renderNav, showFatal } from './app.js';
+import { api, CATEGORY_LABEL, dayOf, el, renderNav, showFatal } from './app.js';
 
 renderNav('/review');
 
@@ -18,6 +18,7 @@ function card(r) {
     const ol = el('ol');
     for (const c of f.corrections) {
       const li = el('li');
+      if (c.category) li.append(el('span', 'tag', CATEGORY_LABEL[c.category] ?? c.category));
       li.append(
         el('del', null, c.from),
         ' → ',
@@ -25,6 +26,7 @@ function card(r) {
         ' ',
         el('span', 'why', c.why),
       );
+      if (c.rule) li.append(el('div', 'rule', `规则：${c.rule}`));
       ol.append(li);
     }
     a.append(el('div', 'label', '纠错'), ol);
@@ -49,7 +51,13 @@ function card(r) {
   a.dataset.search = [
     r.prompt,
     r.corrected,
-    f ? f.corrections.map((c) => `${c.from} ${c.to} ${c.why}`).join(' ') : '',
+    f
+      ? f.corrections
+          .map(
+            (c) => `${c.from} ${c.to} ${c.why} ${c.rule ?? ''} ${CATEGORY_LABEL[c.category] ?? ''}`,
+          )
+          .join(' ')
+      : '',
   ]
     .join(' ')
     .toLowerCase();

@@ -352,3 +352,164 @@ summary {
 .actions {
   margin-top: 14px;
 }
+
+/* 概览：错误类型条形 + 每周趋势柱 */
+.small {
+  font-size: 12px;
+  margin-left: 8px;
+}
+.split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+.split > .card {
+  margin: 0;
+}
+@media (max-width: 720px) {
+  .split {
+    grid-template-columns: 1fr;
+  }
+}
+#cats {
+  margin-top: 10px;
+}
+.bar-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 56px 32px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.bar-track {
+  background: var(--l0);
+  border-radius: 3px;
+  height: 10px;
+}
+.bar-fill {
+  background: var(--l3);
+  border-radius: 3px;
+  height: 100%;
+}
+.bar-num {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.trend {
+  display: flex;
+  gap: 4px;
+  height: 150px;
+  margin-top: 10px;
+}
+.trend-col {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  font-size: 11px;
+  color: var(--muted);
+}
+.trend-plot {
+  display: flex;
+  flex: 1;
+  align-items: flex-end;
+  width: 100%;
+}
+.trend-bar {
+  background: var(--l3);
+  border-radius: 3px 3px 0 0;
+  width: 100%;
+}
+.trend-bar.empty {
+  background: var(--l0);
+}
+.trend-val,
+.trend-day {
+  font-variant-numeric: tabular-nums;
+  line-height: 16px;
+}
+
+/* 记录页：纠错分类标签与语法规则 */
+.tag {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  margin-right: 6px;
+  padding: 0 6px;
+}
+.rule {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+/* 练习页 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 16px 0 4px;
+}
+.chip.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.rules {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+}
+.rules li {
+  margin: 4px 0;
+}
+.small-block {
+  font-size: 13px;
+}
+.exercises {
+  padding-left: 20px;
+}
+.exercises li {
+  margin: 14px 0;
+}
+.exercises textarea {
+  width: 100%;
+  margin-top: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  resize: vertical;
+}
+.exercises details {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.result {
+  font-size: 13px;
+  margin-top: 6px;
+}
+.result.good {
+  color: var(--good);
+}
+.result.bad {
+  color: var(--bad);
+}
+table.scores {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+table.scores th,
+table.scores td {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 8px;
+  text-align: left;
+}

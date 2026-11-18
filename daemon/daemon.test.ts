@@ -28,7 +28,15 @@ after(() => {
 const ENGLISH = 'I now suddenly have a idea, is write a cc plugin to help me learn english.';
 const FEEDBACK = {
   translation: '我突然有个想法',
-  corrections: [{ from: 'a idea', to: 'an idea', why: '元音前用 an' }],
+  corrections: [
+    {
+      from: 'a idea',
+      to: 'an idea',
+      category: 'article',
+      why: '元音前用 an',
+      rule: '元音音素开头的词前用 an',
+    },
+  ],
   revised: 'I suddenly have an idea.',
   revisedTranslation: '我突然有个想法。',
 };
@@ -45,6 +53,18 @@ void test('getSkipReason：命令 / 非人输入 / 代码块 / 粘贴 / 中文 /
       'not-human',
     ],
     ['fix this:\n```ts\nconst a = 1\n```', 'code-block'],
+    ['cd /Users/me/project\ngit tag -d backup/one backup/two\ndu -sh .git', 'shell'],
+    ['❯ rm -rf /opt/app && brew uninstall --cask some-app with extra words', 'shell'],
+    // 句子里提到路径、只有一行：照常纠错
+    ['check the report at /tmp/audit/report.md and continue the rule audit please', null],
+    ['I want to check the report\nand then continue with the remaining items today', null],
+    // 普通英文单词后跟路径 / flag 不算命令；两行里只一行像命令也不算（Codex 二审 2026-11-17 复现的误判）
+    ['check /tmp/report.md for mistakes\nbefore we submit the final version', null],
+    ['use --verbose when you run the build script\nso we can see every step it takes', null],
+    [
+      'git status shows two untracked files in the repo\nshould I commit them before the release',
+      null,
+    ],
     [
       Array.from({ length: 9 }, (_, index) => `line ${index} of pasted log output here`).join('\n'),
       'paste',
@@ -210,6 +230,16 @@ void test('parseFeedback：剥代码围栏；非 JSON 或缺字段返回 null', 
   assert.equal(parseFeedback('{"translation":"x"}'), null);
   // 纠错项不合格（null / 缺字段）也返回 null，走 raw 回退；否则记录页渲染到这条会抛错
   assert.equal(parseFeedback(JSON.stringify({ ...FEEDBACK, corrections: [null] })), null);
+  // 分类不在表里或缺失归 other；0.3 前没有 rule 的纠错照常解析
+  const legacy = { from: 'x', to: 'y', why: 'z' };
+  const odd = { ...legacy, category: 'vibes', rule: 3 };
+  assert.deepEqual(
+    parseFeedback(JSON.stringify({ ...FEEDBACK, corrections: [legacy, odd] }))?.corrections,
+    [
+      { ...legacy, category: 'other' },
+      { ...legacy, category: 'other' },
+    ],
+  );
   assert.equal(
     parseFeedback(JSON.stringify({ ...FEEDBACK, corrections: [{ from: 'a', to: 'b' }] })),
     null,

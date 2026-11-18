@@ -9,7 +9,7 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test daemon/daemon.test.ts ui/data.test.ts ui/server.test.ts",
+    "test": "node --test daemon/daemon.test.ts daemon/backfill.test.ts ui/data.test.ts ui/server.test.ts",
     "lint": "eslint",
     "lint:fix": "eslint --fix . && prettier --write .",
     "format:check": "prettier --check .",

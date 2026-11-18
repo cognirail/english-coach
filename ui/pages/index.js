@@ -1,5 +1,5 @@
 // 概览：统计卡 + 打卡网格（最近 53 周，周一为每列第一格）+ 最近 5 条。
-import { api, dayOf, el, errorRate, fmtRate, renderNav, showFatal } from './app.js';
+import { api, CATEGORY_LABEL, dayOf, el, errorRate, fmtRate, renderNav, showFatal } from './app.js';
 
 renderNav('/');
 
@@ -161,6 +161,61 @@ function wireTip() {
   });
 }
 
+const PRACTICABLE = (c) => c !== 'other' && c !== 'unlabeled';
+
+function renderCategories(categories) {
+  const box = document.getElementById('cats');
+  if (!categories.length) {
+    box.append(el('p', 'muted', '还没有纠错记录。'));
+    return;
+  }
+  const max = categories[0].total;
+  for (const c of categories) {
+    const row = el('div', 'bar-row');
+    const track = el('div', 'bar-track');
+    const fill = el('div', 'bar-fill');
+    fill.style.width = `${(c.total / max) * 100}%`; // CSSOM 赋值，不受 CSP 的内联 style 限制
+    track.append(fill);
+    row.append(
+      el('span', 'bar-label', CATEGORY_LABEL[c.category] ?? c.category),
+      track,
+      el('span', 'bar-num', `${c.total} · ${c.recent}`),
+    );
+    if (PRACTICABLE(c.category)) {
+      const a = el('a', 'bar-act', '练习');
+      a.href = `/practice?category=${encodeURIComponent(c.category)}`;
+      row.append(a);
+    } else {
+      row.append(el('span', 'bar-act'));
+    }
+    box.append(row);
+  }
+}
+
+function renderTrend(weeks) {
+  const box = document.getElementById('trend');
+  const rates = weeks.map((w) => errorRate(w.corrections, w.words));
+  const max = Math.max(...rates.filter((r) => r !== null), 1);
+  weeks.forEach((w, i) => {
+    const col = el('div', 'trend-col');
+    const rate = rates[i];
+    const bar = el('div', rate === null ? 'trend-bar empty' : 'trend-bar');
+    bar.style.height = rate === null ? '2px' : `${Math.max(4, (rate / max) * 100)}%`;
+    col.title =
+      rate === null
+        ? `${w.start} 那周没有可算的记录`
+        : `${w.start} 那周：${w.count} 条，${w.corrections} 处纠错 / ${w.words} 词`;
+    const [, m, d] = w.start.split('-');
+    col.append(
+      el('span', 'trend-val', fmtRate(rate)),
+      el('div', 'trend-plot'),
+      el('span', 'trend-day', `${Number(m)}/${Number(d)}`),
+    );
+    col.querySelector('.trend-plot').append(bar);
+    box.append(col);
+  });
+}
+
 function renderRecent(records) {
   const box = document.getElementById('recent');
   if (!records.length) {
@@ -191,6 +246,8 @@ try {
   renderToggle(s);
   renderHeat(s, 'volume');
   wireTip();
+  renderCategories(s.categories);
+  renderTrend(s.weeks);
   renderRecent(s.recent);
 } catch (error) {
   showFatal(error);

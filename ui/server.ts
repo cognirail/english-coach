@@ -21,13 +21,24 @@ import {
   createComplete,
   DATA_DIR,
   DISABLED_PATH,
+  getSkipReason,
   keySource,
   resolveConfig,
   SHORT_SYSTEM,
   SOCKET_PATH,
+  type Complete,
   type Config,
 } from '../daemon/daemon.ts';
 import { computeStats, readRecords } from './data.ts';
+import {
+  appendSession,
+  cleanAnswers,
+  collectMaterial,
+  generateExercises,
+  gradeAnswers,
+  readScores,
+  toCategory,
+} from './practice.ts';
 
 const HERE = nodePath.dirname(fileURLToPath(import.meta.url));
 const PAGES_DIR = nodePath.join(HERE, 'pages');
@@ -43,6 +54,8 @@ const execFileAsync = promisify(execFile);
 const STATIC: Record<string, [file: string, type: string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'],
   '/review': ['review.html', 'text/html; charset=utf-8'],
+  '/practice': ['practice.html', 'text/html; charset=utf-8'],
+  '/practice.js': ['practice.js', 'text/javascript; charset=utf-8'],
   '/settings': ['settings.html', 'text/html; charset=utf-8'],
   '/app.css': ['app.css', 'text/css; charset=utf-8'],
   '/app.js': ['app.js', 'text/javascript; charset=utf-8'],
@@ -79,6 +92,7 @@ export interface UiOptions {
   daemonPid: () => Promise<number | null>;
   restartDaemon: () => Promise<void>;
   probe: (config: Config) => Promise<string>;
+  complete: (config: Config) => Complete; // 练习出题与判分用；测试注入假的，不出网
   onRequest?: () => void;
 }
 
@@ -196,13 +210,77 @@ async function settingsView(options: UiOptions): Promise<unknown> {
 
 type Route = (req: http.IncomingMessage, options: UiOptions) => Promise<unknown>;
 
+/** 统计与练习只看现行跳过规则下仍会纠错的记录：规则收紧前录进来的粘贴命令等不算练习。记录页仍看全部。 */
+async function readCoachable(dataDirectory: string): ReturnType<typeof readRecords> {
+  const { records, bad } = await readRecords(dataDirectory);
+  return { records: records.filter((r) => getSkipReason(r.prompt) === null), bad };
+}
+
+/** 请求体校验失败转 400；其余错误原样上抛。 */
+function asBadRequest<T>(parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    throw new HttpError(400, (error as Error).message);
+  }
+}
+
+/** 模型调用失败转 502：页面能区分「我填错了」和「模型那边出问题」。 */
+async function viaModel<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    throw new HttpError(502, (error as Error).message);
+  }
+}
+
+async function modelFor(options: UiOptions): Promise<Complete> {
+  return options.complete(resolveConfig(await readConfigFile(options.configPath)));
+}
+
 /** 接口表：键为「方法 路径」，值返回 200 的 JSON 体；校验失败抛 HttpError。 */
 const ROUTES: Record<string, Route> = {
   'GET /api/stats': async (_req, options) => {
-    const { records, bad } = await readRecords(options.dataDirectory);
+    const { records, bad } = await readCoachable(options.dataDirectory);
     return { ...computeStats(records), bad, recent: records.slice(0, 5) };
   },
   'GET /api/records': (_req, options) => readRecords(options.dataDirectory),
+  'GET /api/practice': async (req, options) => {
+    const { records } = await readCoachable(options.dataDirectory);
+    const category = toCategory(
+      new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('category'),
+    );
+    return {
+      categories: computeStats(records).categories.filter((c) => toCategory(c.category) !== null),
+      scores: await readScores(options.dataDirectory),
+      material: category === null ? null : collectMaterial(records, category),
+    };
+  },
+  'POST /api/practice/generate': async (req, options) => {
+    const category = toCategory(((await readBody(req)) as { category?: unknown } | null)?.category);
+    if (category === null) {
+      throw new HttpError(400, 'category 不在可练习的分类里');
+    }
+    const { records } = await readCoachable(options.dataDirectory);
+    const complete = await modelFor(options);
+    const exercises = await viaModel(() =>
+      generateExercises(complete, category, collectMaterial(records, category)),
+    );
+    return { category, exercises };
+  },
+  'POST /api/practice/grade': async (req, options) => {
+    const body = await readBody(req);
+    const { category, items } = asBadRequest(() => cleanAnswers(body));
+    const complete = await modelFor(options);
+    const graded = await viaModel(() => gradeAnswers(complete, items));
+    await appendSession(options.dataDirectory, {
+      v: 1,
+      ts: new Date().toISOString(),
+      category,
+      items: graded,
+    });
+    return { category, items: graded, correct: graded.filter((g) => g.correct).length };
+  },
   'GET /api/health': () => Promise.resolve({ ok: true, pid: process.pid }),
   'GET /api/settings': (_req, options) => settingsView(options),
   'PUT /api/settings': async (req, options) => {
@@ -414,6 +492,7 @@ async function serve(): Promise<void> {
     daemonPid,
     restartDaemon,
     probe,
+    complete: createComplete,
     onRequest: bump,
   });
   await new Promise<void>((resolve, reject) => {

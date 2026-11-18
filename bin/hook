@@ -13,6 +13,11 @@ DATA="${ENGLISH_COACH_HOME:-${HOME}/.english-coach}" # 与 daemon 的 DATA_DIR �
 SOCK="${DATA}/daemon.sock"
 PKG="$(cd "$(dirname "$0")/.." && pwd -P)"
 [[ -e "${DATA}/disabled" ]] && exit 0 # 开关：touch 即关，rm 即开，不用重开会话
+# 迁移中（node daemon/backfill.ts 在改写记录）：daemon 不会启动，直接提示跳过，不走 3 秒拉起
+if [[ -e "${DATA}/migrating" ]]; then
+  printf '{"systemMessage":"english-coach: 正在迁移旧记录，本条未检查"}'
+  exit 0
+fi
 payload="$(cat)"
 
 # payload 走 stdin 不走参数：超长粘贴会撑爆 argv（macOS ARG_MAX 1MB），那会被误判成 daemon 不可用

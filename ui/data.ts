@@ -6,7 +6,14 @@
 // =============================================================================
 import { readdir, readFile } from 'node:fs/promises';
 import nodePath from 'node:path';
-import { countEnglishWords, recordsDirectory, type CoachRecord } from '../daemon/daemon.ts';
+import {
+  CATEGORIES,
+  countEnglishWords,
+  isEnglishCorrection,
+  recordsDirectory,
+  type Category,
+  type CoachRecord,
+} from '../daemon/daemon.ts';
 
 /** 读全部分片，按时间倒序。 */
 export async function readRecords(
@@ -53,7 +60,18 @@ export interface Stats {
   total: { count: number; days: number; corrections: number; words: number };
   streak: { current: number; longest: number };
   week: { thisWeek: Period; lastWeek: Period };
+  categories: CategoryStat[]; // 按全部次数降序，0 次的不列
+  weeks: (Period & { start: string })[]; // 最近 TREND_WEEKS 周，旧到新，start 为周一
 }
+
+export interface CategoryStat {
+  category: Category | 'unlabeled';
+  total: number;
+  recent: number; // 最近 RECENT_DAYS 天（含今天）
+}
+
+const RECENT_DAYS = 30;
+const TREND_WEEKS = 12;
 
 export interface Period {
   count: number;
@@ -91,7 +109,7 @@ function aggregateDays(records: CoachRecord[]): Map<string, DayStat> {
     if (r.feedback !== null) {
       s.scored++;
       s.words += countEnglishWords(r.prompt);
-      s.corrections += r.feedback.corrections.length;
+      s.corrections += r.feedback.corrections.filter((c) => isEnglishCorrection(c)).length;
     }
     byDay.set(day, s);
   }
@@ -145,6 +163,61 @@ function computeWeeks(days: DayStat[], today: string): Stats['week'] {
   return { thisWeek, lastWeek };
 }
 
+function computeCategories(records: CoachRecord[], today: string): CategoryStat[] {
+  const since = addDays(today, -(RECENT_DAYS - 1));
+  const counts = new Map<CategoryStat['category'], CategoryStat>(
+    [...CATEGORIES, 'unlabeled' as const].map((category) => [
+      category,
+      { category, total: 0, recent: 0 },
+    ]),
+  );
+  for (const r of records) {
+    const day = localDay(new Date(r.ts));
+    const corrections = r.feedback?.corrections ?? [];
+    for (const c of corrections) {
+      if (!isEnglishCorrection(c) || day > today) {
+        continue;
+      }
+      const stat = counts.get(c.category ?? 'unlabeled');
+      if (stat !== undefined) {
+        stat.total++;
+        stat.recent += day >= since ? 1 : 0;
+      }
+    }
+  }
+  return counts
+    .values()
+    .filter((s) => s.total > 0)
+    .toArray()
+    .toSorted((a, b) => (b.total === a.total ? b.recent - a.recent : b.total - a.total));
+}
+
+function computeTrend(days: DayStat[], today: string): Stats['weeks'] {
+  const first = addDays(weekStart(today), -7 * (TREND_WEEKS - 1));
+  const weeks = Array.from({ length: TREND_WEEKS }, (_, index) => ({
+    start: addDays(first, index * 7),
+    ...emptyPeriod(),
+  }));
+  for (const s of days) {
+    if (s.day < first || s.day > today) {
+      continue;
+    }
+    const week = weeks[Math.floor(daysBetween(first, s.day) / 7)];
+    if (week !== undefined) {
+      week.count += s.count;
+      week.words += s.words;
+      week.corrections += s.corrections;
+    }
+  }
+  return weeks;
+}
+
+function daysBetween(from: string, to: string): number {
+  const [y1, m1, d1] = from.split('-').map(Number) as [number, number, number];
+  const [y2, m2, d2] = to.split('-').map(Number) as [number, number, number];
+  return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000);
+}
+
 export function computeStats(records: CoachRecord[], now = new Date()): Stats {
   const byDay = aggregateDays(records);
   const days = byDay
@@ -162,5 +235,7 @@ export function computeStats(records: CoachRecord[], now = new Date()): Stats {
     },
     streak: computeStreak(byDay, days, today),
     week: computeWeeks(days, today),
+    categories: computeCategories(records, today),
+    weeks: computeTrend(days, today),
   };
 }

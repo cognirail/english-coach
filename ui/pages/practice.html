@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>english-coach 练习</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/app.css" />
+    <script type="module" src="/practice.js"></script>
+  </head>
+  <body>
+    <main>
+      <div class="chips" id="chips"></div>
+      <section class="split">
+        <div class="card">
+          <strong>这类错误的规则</strong>
+          <ul class="rules" id="rules"></ul>
+        </div>
+        <div class="card">
+          <strong>你写错过的</strong>
+          <ul class="rules" id="examples"></ul>
+        </div>
+      </section>
+      <section class="card">
+        <div class="heat-head">
+          <strong id="round-title">改错练习</strong>
+          <button class="primary" id="generate" type="button">出 5 道题</button>
+        </div>
+        <p class="muted small-block" id="round-hint">
+          每题一句含一处错误的英文，在框里改成正确的整句后交卷，模型判分。
+        </p>
+        <ol class="exercises" id="exercises"></ol>
+        <div class="actions" id="submit-row" hidden>
+          <button class="primary" id="submit" type="button">交卷</button>
+          <span class="muted" id="score"></span>
+        </div>
+      </section>
+      <h2>练习战绩</h2>
+      <div id="scores"></div>
+    </main>
+  </body>
+</html>
